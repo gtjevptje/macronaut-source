@@ -1,0 +1,24 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+dist/
+build/
+*.bak*
+backups/
+_shots/
+/Macronaut/
+.claude/settings.local.json
+.obsidian/
+*.base
+
+# Local copy of the published hero image, pulled down so `site/index.html` can
+# be previewed with relative paths. The real one lives in the public repo
+# alongside the page it is published beside.
+site/assets/
+
+# ⚠ Belt and braces only. The licence signing key is written to
+# ~/.macronaut-dev/, deliberately OUTSIDE this tree, so that no `git add -A`
+# can reach it. These patterns exist in case someone ever moves it in here.
+signing-key.json
+issued-keys.jsonl
+.macronaut-dev/

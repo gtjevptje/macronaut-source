@@ -1,0 +1,77 @@
+"""
+Search-area support in matcher.
+
+The one thing a region must never do is move the answer. A match found inside a
+crop is reported at crop-relative coordinates, and every caller — the click on
+a found image, the box the Test-match preview draws — reads the result as
+full-screenshot pixels. Getting the shift wrong doesn't fail loudly; it clicks
+somewhere else on the screen.
+"""
+import os
+import sys
+
+import pytest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import matcher
+
+pytestmark = pytest.mark.skipif(not matcher.ENABLED,
+                                reason="needs opencv-python + Pillow")
+
+
+@pytest.fixture
+def haystack(tmp_path):
+    """A 400x300 black screen with a distinctive 24x18 red patch at (260, 190),
+    and that patch on its own as the template."""
+    from PIL import Image
+    shot = Image.new("RGB", (400, 300), (0, 0, 0))
+    patch = Image.new("RGB", (24, 18), (220, 30, 30))
+    for x in range(0, 24, 6):                     # some structure to match on
+        for y in range(0, 18, 6):
+            patch.putpixel((x, y), (250, 250, 40))
+    shot.paste(patch, (260, 190))
+    tpl = tmp_path / "patch.png"
+    patch.save(tpl)
+    return shot, str(tpl), (260, 190)
+
+
+def test_a_region_does_not_move_the_answer(haystack):
+    shot, tpl, (tx, ty) = haystack
+    whole = matcher.find(tpl, 0.9, screenshot=shot)
+    inside = matcher.find(tpl, 0.9, screenshot=shot, region=(240, 170, 120, 100))
+    assert whole is not None and inside is not None
+    assert (inside.left, inside.top) == (whole.left, whole.top) == (tx, ty), \
+        "a match found in a crop must come back in full-screenshot coordinates"
+
+
+def test_a_region_that_excludes_the_target_finds_nothing(haystack):
+    shot, tpl, _ = haystack
+    assert matcher.find(tpl, 0.9, screenshot=shot, region=(0, 0, 100, 100)) is None
+
+
+def test_an_unusable_region_searches_everything_rather_than_nothing(haystack):
+    """A search area is an optimisation. Failing it closed would silently stop a
+    working flow from ever matching, which is the worse of the two wrongs."""
+    shot, tpl, (tx, ty) = haystack
+    for bad in (None, (), "nonsense", (10, 10, 0, 0), (5000, 5000, 10, 10),
+                (-500, -500, 100, 100)):
+        m = matcher.find(tpl, 0.9, screenshot=shot, region=bad)
+        assert m is not None and (m.left, m.top) == (tx, ty), f"region={bad!r}"
+
+
+def test_a_region_hanging_off_the_edge_is_clipped_not_discarded(haystack):
+    """Overhang is normal — a region dragged to the corner of a screen, then the
+    screenshot grabbed at a different DPI. It still has to search what's left."""
+    shot, tpl, (tx, ty) = haystack
+    m = matcher.find(tpl, 0.9, screenshot=shot, region=(240, 170, 9000, 9000))
+    assert m is not None and (m.left, m.top) == (tx, ty)
+
+
+def test_best_match_reports_the_same_box_with_and_without_a_region(haystack):
+    """best_match feeds the Test-match preview, which draws its box on the FULL
+    screenshot — so it has to shift too, not just find()."""
+    shot, tpl, (tx, ty) = haystack
+    m = matcher.best_match(tpl, screenshot=shot, region=(200, 150, 150, 120))
+    assert m is not None
+    assert (m.left, m.top) == (tx, ty)
