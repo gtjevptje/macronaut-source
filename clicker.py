@@ -1,4 +1,23 @@
-"""Mouse click automation engine — runs in a QThread worker."""
+"""⚰ DEAD CODE. Nothing imports this module and nothing runs it.
+
+Read this before spending any time here. It was Macronaut's original clicking
+engine; the 2.0 rewrite replaced it with the `autoclick` node, and the live
+implementation is `flow_exec.FlowInterpreter._run_autoclick`, which was ported
+from `ClickWorker.run()` below and is where a fix actually belongs.
+
+It is still in the tree for two reasons and neither is that it works. The mount
+this project is developed on refuses deletes, and the published source is a
+mirror of the working tree rather than a curated subset — so removing it is a
+thing to do deliberately rather than a thing that happens. It is **not** bundled
+into the .exe: `macronaut.spec` collects imports, and nothing imports this.
+
+⚠ It is also out of date in ways that matter. It predates the selectable input
+backends (`input_backends.make_mouse()`), so it talks to pynput directly and
+cannot reach a game that ignores message-queue input — the single most common
+reason someone needs this program at all.
+
+Historical mouse click automation engine — ran in a QThread worker.
+"""
 import time
 import random
 from typing import Optional, Tuple

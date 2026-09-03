@@ -1,10 +1,27 @@
-"""
-Macronaut 2.0 floating orb — the launcher + minimized state.
+"""⚰ DEAD CODE, and deliberately kept that way. Do not wire this up.
 
-A small, draggable, always-on-top circle that shows the app's live state at a
-glance and expands back to the window on click. Three states (mirroring the tray
-convention): idle (indigo, rocket + CPS), running (green ring, live CPS),
-recording (coral, REC). See design/Macronaut-2.0-interface.html §1.
+Nothing imports this module, no version of Macronaut has ever shipped it
+enabled, and `tests/test_gui_offscreen.py::test_the_orb_is_still_an_orphan`
+fails if `main.py`, `compact.py`, `flow_canvas.py`, `flow_dialogs.py` or
+`settings.py` starts importing it. That test is the point: importing it would
+put a half-built feature back into the frozen build.
+
+It was never finished. Its enable flag was switched off during the 2.0 fixes
+round and every call site was removed when the compact face was, on 13 August
+2026. The compact face came back on 28 August; this did not, and that was a
+decision rather than an oversight.
+
+It stays in the tree because the mount this project is developed on refuses
+deletes, and because the published source mirrors the working tree. It is not
+in the .exe — `macronaut.spec` collects imports, and nothing imports this.
+
+⚠ The design document this used to cite is not in the public repository. It is
+one of the early planning files kept private; there is no missing link to chase.
+
+What it was going to be: a small, draggable, always-on-top circle showing the
+app's live state at a glance, expanding back to the window on click, with three
+states mirroring the tray convention — idle (indigo, rocket + CPS), running
+(green ring, live CPS), recording (coral, REC).
 """
 from PySide6.QtCore import Qt, Signal, QPoint, QRectF
 from PySide6.QtGui import QPainter, QColor, QPen, QFont
