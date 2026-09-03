@@ -168,8 +168,7 @@ def test_every_note_fits_the_header_that_draws_it(qapp):
     from a fallback that is nothing like the shipped UI font: measured there,
     all six notes report as clipped while all six are fine on Windows. A test
     that fails on correct data is worse than no test, so this one refuses to
-    guess — run the suite on a real platform, or use
-    `scratchpad/measure_notes.py`, to get the answer.
+    guess — run the suite on a real Windows desktop to get the answer.
     """
     from PySide6.QtCore import QRect, Qt
     from PySide6.QtGui import QFont, QFontDatabase, QFontMetrics

@@ -9,7 +9,9 @@ and cannot disagree.
 
 Typical flow:
 
-    1. python release.py --bump patch --notes-file NOTES.md
+    1. Write RELEASE-NOTES-<new version>.md, then
+       python release.py --bump patch
+         (the notes file is found by name — --notes / --notes-file override it)
          → bumps version.py, builds dist/Macronaut.exe, writes dist/update.json
          (add --sign once a code-signing certificate exists; it must run before
          the manifest, because signing changes the bytes the hash describes)
@@ -212,6 +214,22 @@ def write_manifest(ver: str, notes: str = "", mandatory: bool = False) -> Path:
 
 
 # ── Publish ───────────────────────────────────────────────────────────────────
+def notes_file_for(ver: str) -> Path:
+    """The conventional notes file for a version: `RELEASE-NOTES-<ver>.md`.
+
+    ⚠ This exists because the warning below was not enough. Eight of the first
+    twenty-six releases went out with a body of `Macronaut 2.0.14` and nothing
+    else — the page a person lands on to download, saying nothing about what
+    changed. `publish()` printed a warning every time and the release
+    succeeded anyway, which is what a warning buys you.
+
+    So the file is now *found* rather than passed. Every release since 2.1.1
+    has written one under this name; looking for it costs nothing and removes
+    the only step in the flow that had to be remembered.
+    """
+    return ROOT / f"RELEASE-NOTES-{ver}.md"
+
+
 def publish(ver: str, notes: str = "") -> None:
     if shutil.which("gh") is None:
         raise SystemExit(
@@ -266,11 +284,19 @@ def publish(ver: str, notes: str = "") -> None:
         if notes:
             print("  · no --notes given; using the notes already in "
                   "dist/update.json")
+    # Third source, and the one that needs no remembering: the conventional
+    # file. See notes_file_for() for why a warning was not sufficient.
+    if not notes:
+        conventional = notes_file_for(ver)
+        if conventional.is_file():
+            notes = conventional.read_text(encoding="utf-8")
+            print(f"  · no --notes given; using {conventional.name}")
     if not notes:
         print("  ⚠ publishing with NO release notes. The release page will be "
-              "empty — pass --notes-file, or edit it afterwards with\n"
+              f"empty — write {notes_file_for(ver).name}, pass --notes-file, "
+              "or fix it afterwards with\n"
               f"      gh release edit v{ver} --repo {_v.UPDATE_REPO} "
-              "--notes-file NOTES.md")
+              f"--notes-file {notes_file_for(ver).name}")
 
     tag = f"v{ver}"
     r = _run(["gh", "release", "create", tag,
@@ -311,6 +337,16 @@ def main(argv: list) -> int:
         args.build = args.manifest = True
 
     ver = _v.__version__
+    # ⚠ Resolve the conventional notes file here too, not only in publish().
+    # The manifest is what the *in-app* update dialog shows, and it is written
+    # by --manifest, which can run in a separate invocation from --publish. If
+    # only publish() found the file, the release page would carry the notes
+    # while every user's update dialog showed nothing — which is the same bug
+    # as the empty release page, pointed at the other audience.
+    if not notes and not args.bump:
+        conventional = notes_file_for(ver)
+        if conventional.is_file():
+            notes = conventional.read_text(encoding="utf-8")
     if args.bump:
         ver = bump(args.bump)
         # Re-exec so the build below picks up the new version rather than the

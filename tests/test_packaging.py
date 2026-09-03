@@ -123,6 +123,47 @@ def test_the_readme_sends_a_searcher_to_the_download_before_the_small_print():
     assert "commit history starts on the day the project went open source" in readme
 
 
+def test_release_notes_are_found_by_name_and_every_release_has_them():
+    """⚠ Eight of the first twenty-six releases went out with an empty page.
+
+    Their body was `Macronaut 2.0.14` and nothing else — on the page a person
+    lands on to download the thing. `release.py` printed a warning every time
+    and published anyway, because that is what a warning does. Backfilled on
+    3 September 2026 from the development record.
+
+    The fix is that the notes file is now *found* by name rather than
+    remembered: `RELEASE-NOTES-<version>.md`, resolved in both `publish()` and
+    at manifest time. Both matter and for different audiences — the manifest
+    is what the in-app update dialog shows, and it can be written by a
+    separate invocation from the one that publishes, so a fix in only one
+    place moves the empty page from GitHub to every user's update dialog.
+
+    This pins the convention rather than the plumbing: every version that has
+    ever shipped a notes file keeps one, and the resolver still finds it.
+    """
+    import release
+
+    # The resolver agrees with the convention the files on disk use.
+    for name in os.listdir(ROOT):
+        m = re.fullmatch(r"RELEASE-NOTES-(\d+\.\d+\.\d+)\.md", name)
+        if not m:
+            continue
+        found = release.notes_file_for(m.group(1))
+        assert found.name == name, (
+            f"release.py looks for {found.name} but the repo has {name}")
+        assert found.is_file(), f"{found} is not found by its own resolver"
+
+    # The current version must have one before it can be released, and the
+    # published README quotes the same version.
+    import version
+    here = release.notes_file_for(version.__version__)
+    assert here.is_file(), (
+        f"{here.name} does not exist — publishing {version.__version__} now "
+        "would produce a release page with nothing on it")
+    assert len(here.read_text(encoding="utf-8").strip()) > 200, (
+        f"{here.name} is too short to be release notes")
+
+
 def test_the_scoop_and_winget_manifests_describe_the_same_download():
     """⚠ Two manifests, one binary, and nothing regenerates either of them.
 
