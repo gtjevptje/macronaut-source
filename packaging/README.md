@@ -62,6 +62,21 @@ opening the PR:
   what an unsigned binary with no download history actually risks) is not the
   same thing as a signature hit and would not show up here.
 
+  ✅ **The published binary also self-tests clean, 3 September 2026.** Not a
+  pre-release build — the actual download, hash-verified as
+  `8a23143a…` first, then run with `--selftest`: **exit 0, 12 of 12**.
+  Including the three that only fail once frozen and fail *silently*: image
+  matching relocated its patch, Windows OCR read its vector at score 1.00, and
+  the legal files were present in the bundle. Also confirmed live in the
+  shipped artefact: licensing verifies and rejects tampering, the free tier
+  reads 20 steps, enforcement is off, 6 starters ship with 5 in the free tier
+  (which is the number the website quotes), and the updater resolves.
+
+  Worth doing because every previous self-test result in this project was
+  taken from a build on this machine *before* publishing. This is the first
+  time the file people actually download has been checked, and PyInstaller's
+  non-reproducibility means those are not the same file.
+
 - ⚠ **There is no VirusTotal record for the shipped binary at all** — checked
   3 September, the hash returns "Item not found", meaning nobody has ever
   submitted it. Worth deciding deliberately rather than leaving to chance:
