@@ -671,3 +671,72 @@ def test_the_public_key_is_baked_in_and_is_not_a_placeholder():
     assert len(licensing.PUBLIC_KEY_HEX) == 64
     bytes.fromhex(licensing.PUBLIC_KEY_HEX)          # raises if not hex
     assert set(licensing.PUBLIC_KEY_HEX) != {"0"}
+
+
+def test_no_module_uses_a_name_it_never_defines():
+    """⚠ A missing import in a branch that rarely runs is invisible until it runs.
+
+    Found on 3 September 2026 in this suite's own
+    `tests/test_input_backends.py`: it called `pytest.skip(...)` without
+    importing pytest. The line sat behind a guard that only fires on a 32-bit
+    interpreter, so every run on x64 was green and the `NameError` waited.
+
+    That shape is worse in the app than in a test. The branches that rarely run
+    are the error paths — a fallback, an `except`, a "your display is being
+    reconfigured" case — which is precisely where a crash is least welcome and
+    least likely to have been exercised. `python -B -c "import x"` catches a
+    truncated file, and this catches the other thing an import cannot see:
+    a name that is only looked up when something goes wrong.
+
+    Deliberately a name check and not a linter. It parses rather than imports,
+    so it costs nothing and needs no dependency, and it makes no judgement about
+    style — only that every name a module loads is one it could actually have.
+    """
+    import ast
+    import builtins
+
+    targets = (sorted(glob.glob(os.path.join(ROOT, "*.py")))
+               + sorted(glob.glob(os.path.join(ROOT, "tests", "*.py")))
+               + sorted(glob.glob(os.path.join(ROOT, "tools", "*.py"))))
+    assert targets, "found no modules to check"
+
+    ALWAYS = set(dir(builtins)) | {"__file__", "__name__", "__doc__", "__spec__"}
+    offenders = {}
+
+    for path in targets:
+        with open(path, encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+        bound = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for a in node.names:
+                    bound.add((a.asname or a.name).split(".")[0])
+            elif isinstance(node, ast.ImportFrom):
+                # ⚠ `from x import *` would make this check meaningless, so it
+                # is refused rather than silently tolerated.
+                assert not any(a.name == "*" for a in node.names), (
+                    f"{os.path.basename(path)} uses a star import; this "
+                    "check cannot see what it brings in")
+                for a in node.names:
+                    bound.add(a.asname or a.name)
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                   ast.ClassDef)):
+                bound.add(node.name)
+            elif isinstance(node, ast.Name) and isinstance(node.ctx,
+                                                           (ast.Store, ast.Del)):
+                bound.add(node.id)
+            elif isinstance(node, ast.arg):
+                bound.add(node.arg)
+            elif isinstance(node, ast.ExceptHandler) and node.name:
+                bound.add(node.name)
+            elif isinstance(node, (ast.Global, ast.Nonlocal)):
+                bound.update(node.names)
+
+        used = {n.id for n in ast.walk(tree)
+                if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)}
+        missing = sorted(used - bound - ALWAYS)
+        if missing:
+            offenders[os.path.basename(path)] = missing
+
+    assert not offenders, "names used but never defined:\n" + "\n".join(
+        f"  {name}: {', '.join(miss)}" for name, miss in offenders.items())
