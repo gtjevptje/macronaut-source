@@ -3,7 +3,7 @@
 Thanks for looking. This is a one-person project, so replies are not instant,
 but issues and pull requests are genuinely welcome.
 
-## Two things to know before you start
+## Three things to know before you start
 
 **Macronaut is largely AI-authored, under my direction and with my name on it.**
 The commit history makes that obvious, so you would find out anyway, and you
@@ -17,6 +17,26 @@ say so in the PR — a comment that lies is a bug.
 **It is Windows-only, and so is the test suite.** It uses global Windows hooks,
 `pywin32`, and the Windows OCR engine. There is no Linux or macOS port planned
 and a PR adding one is a bigger conversation than a PR.
+
+**Some comments point at files that are not in this repository, and that is
+not rot.** This repo is the program. The working repository it is mirrored
+from also holds the things *around* the program, and those are not published.
+You will see references to:
+
+| Referenced | What it is |
+| --- | --- |
+| `tools/mint_license.py` | The licence signer. It holds the private half of the key in `licensing.py`, so publishing it would hand out the ability to mint Pro keys. `ed25519.py` is the public half and is here in full. |
+| `tools/build_site.py`, `site/` | The website and its generator. |
+| `tools/fulfil.py` | Turns a paid order into a licence key and a delivery e-mail. |
+| `TESTING.md` | The manual test checklist — the things no headless suite can reach, like real DPI scaling and always-on-top over a fullscreen game. |
+| `GROWTH.md`, `ROADMAP.md`, `design/` | Planning and business notes. |
+
+**Nothing about the program itself is withheld** — every line that goes into
+the `.exe` is here, and `pyinstaller macronaut.spec` builds it. The tests that
+need one of those files skip rather than fail, via `pytest.importorskip` or a
+`skipif`, so a clean clone runs green. If you hit a reference you genuinely
+cannot work without, open an issue and say so; some of them could be published
+and simply have not been.
 
 ## Getting set up
 
