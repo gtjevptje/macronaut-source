@@ -764,8 +764,38 @@ class FlowGraph:
 
     @classmethod
     def load(cls, path: str) -> "FlowGraph":
+        """Read a flow, and say something useful when the file is damaged.
+
+        ⚠ Every caller shows this exception to the user — a message box, or a
+        tray notification for a launcher key. A raw `json` error reads
+        "Expecting value: line 1 column 20 (char 19)", which tells somebody
+        neither what is wrong nor that the problem is their *file* rather than
+        the program. They are as likely to conclude Macronaut is broken.
+
+        Worth doing now specifically: `save` was not atomic until 4 September
+        2026, so an interrupted write could leave a half-written file, and
+        anyone it happened to still has that file sitting in their library.
+        """
         with open(path, "r", encoding="utf-8") as f:
-            return cls.from_dict(json.load(f))
+            text = f.read()
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError as exc:
+            name = os.path.basename(path)
+            if not text.strip():
+                raise ValueError(
+                    f"“{name}” is empty. The file is still there, but there is "
+                    "nothing in it to open.") from exc
+            raise ValueError(
+                f"“{name}” is not readable as a flow — it looks like the file "
+                f"was cut short while being saved ({exc.msg} at character "
+                f"{exc.pos} of {len(text)}). Nothing has been changed; the "
+                "file is still on disk if you want to look at it."
+            ) from exc
+        if not isinstance(payload, dict):
+            raise ValueError(
+                f"“{os.path.basename(path)}” does not contain a flow.")
+        return cls.from_dict(payload)
 
     # ── v1 → v2 migration (backward compatibility) ─────────────────────
     @classmethod

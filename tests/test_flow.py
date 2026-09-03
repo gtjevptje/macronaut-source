@@ -2049,3 +2049,48 @@ def test_saving_still_round_trips_after_the_atomic_rewrite(tmp_path):
     assert len(back.nodes) == len(g.nodes)
     assert any((n.data.get("step") or {}).get("data", {}).get("ms") == 1234
                for n in back.nodes.values())
+
+
+def test_a_damaged_flow_says_so_in_words_a_person_can_act_on(tmp_path):
+    """⚠ Every caller shows this exception straight to the user.
+
+    A raw `json` error reads "Expecting value: line 1 column 20 (char 19)",
+    which says neither what is wrong nor that the fault is in the *file* rather
+    than the program — a reader is as likely to conclude Macronaut is broken.
+
+    This matters right now rather than in principle: `save` was not atomic
+    until 4 September 2026, so an interrupted write could leave a half-written
+    flow, and anyone it happened to still has that file in their library.
+    """
+    import flow
+
+    cut_short = tmp_path / "my big flow.json"
+    cut_short.write_text('{\n  "version": 2,\n  "nodes": [\n', encoding="utf-8")
+    with pytest.raises(ValueError) as e:
+        flow.FlowGraph.load(str(cut_short))
+    msg = str(e.value)
+    assert "my big flow.json" in msg, "the message does not name the file"
+    assert "cut short" in msg, msg
+    assert "still on disk" in msg, (
+        "the message does not tell the user their file is still there, which "
+        "is the one reassurance that matters at that moment")
+
+    empty = tmp_path / "empty.json"
+    empty.write_text("", encoding="utf-8")
+    with pytest.raises(ValueError) as e2:
+        flow.FlowGraph.load(str(empty))
+    assert "is empty" in str(e2.value), str(e2.value)
+
+    # A valid JSON document that is not a flow at all.
+    wrong = tmp_path / "list.json"
+    wrong.write_text("[1, 2, 3]", encoding="utf-8")
+    with pytest.raises(ValueError):
+        flow.FlowGraph.load(str(wrong))
+
+    # ⚠ And a good file still loads — the guard must not have eaten the path
+    # every flow in the library takes.
+    good = flow.FlowGraph()
+    good.add_node(flow.N_ACTION, {"step": {"kind": "wait", "data": {"ms": 5}}})
+    ok = tmp_path / "fine.json"
+    good.save(str(ok))
+    assert len(flow.FlowGraph.load(str(ok)).nodes) == len(good.nodes)
