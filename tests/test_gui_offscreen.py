@@ -4646,3 +4646,122 @@ def test_progress_and_errors_reach_the_dialog(qapp, monkeypatch):
         assert "checksum" in dlg._status.text()
     finally:
         dlg.deleteLater()
+
+
+# ── the trashcan ──────────────────────────────────────────────────────────────
+#
+# ⚠ Zero tests until 4 September 2026, on the only gesture in the canvas that
+# destroys work. Wire routing has nineteen. The asymmetry is the wrong way
+# round: a mis-routed wire is visible and annoying, and a node deleted by a
+# gesture the user did not think they made is gone.
+
+def _drag_node_to(canvas, node_id, view_pos, *, press_first=True):
+    """Press on a node, travel, release at `view_pos` (viewport coordinates)."""
+    from PySide6.QtCore import QPointF, QEvent, Qt
+    item = canvas.scene_().node_item(node_id)
+    start = canvas.mapFromScene(item.sceneBoundingRect().center())
+    if press_first:
+        _send_mouse(canvas, QEvent.MouseButtonPress, QPointF(start),
+                    Qt.LeftButton, Qt.LeftButton)
+    _send_mouse(canvas, QEvent.MouseMove, QPointF(view_pos),
+                Qt.NoButton, Qt.LeftButton)
+    _send_mouse(canvas, QEvent.MouseButtonRelease, QPointF(view_pos),
+                Qt.LeftButton, Qt.NoButton)
+
+
+def _trash_centre(canvas):
+    from PySide6.QtCore import QPointF
+    g = canvas._trash.geometry()
+    return QPointF(g.center())
+
+
+def test_dragging_a_node_onto_the_trash_deletes_it(canvas):
+    """The gesture works at all — without this the three guards below could
+    all pass on a trashcan that never fires."""
+    import flow
+    canvas.resize(700, 500)
+    canvas.show()
+    n = canvas.graph.add_node(flow.N_ACTION,
+                              {"step": {"kind": "wait", "data": {"ms": 1}}},
+                              x=40, y=40)
+    canvas.scene_().rebuild()
+    assert n.id in canvas.graph.nodes
+
+    _drag_node_to(canvas, n.id, _trash_centre(canvas))
+    assert n.id not in canvas.graph.nodes, "the trashcan did not delete the node"
+
+
+def test_a_click_on_a_node_never_deletes_it(canvas):
+    """⚠ The safety property. `drop_on_trash` is gated on `started`, so a press
+    and release that never travelled is not a drag and must not destroy
+    anything — even when the node happens to sit under the trashcan, which on a
+    small window it easily can."""
+    import flow
+    from PySide6.QtCore import QPointF, QEvent, Qt
+    canvas.resize(700, 500)
+    canvas.show()
+    n = canvas.graph.add_node(flow.N_ACTION,
+                              {"step": {"kind": "wait", "data": {"ms": 1}}},
+                              x=40, y=40)
+    canvas.scene_().rebuild()
+
+    centre = _trash_centre(canvas)
+    _send_mouse(canvas, QEvent.MouseButtonPress, centre, Qt.LeftButton, Qt.LeftButton)
+    _send_mouse(canvas, QEvent.MouseButtonRelease, centre, Qt.LeftButton, Qt.NoButton)
+    assert n.id in canvas.graph.nodes, (
+        "a press and release with no travel deleted a node")
+
+
+def test_dropping_a_node_anywhere_else_keeps_it(canvas):
+    """The other half: the trashcan must not be a general delete-on-release."""
+    import flow
+    from PySide6.QtCore import QPointF
+    canvas.resize(700, 500)
+    canvas.show()
+    n = canvas.graph.add_node(flow.N_ACTION,
+                              {"step": {"kind": "wait", "data": {"ms": 1}}},
+                              x=40, y=40)
+    canvas.scene_().rebuild()
+
+    _drag_node_to(canvas, n.id, QPointF(120.0, 90.0))
+    assert n.id in canvas.graph.nodes, "dropping away from the trash deleted it"
+
+
+def test_the_trashcan_takes_the_whole_selection_with_it(canvas):
+    """⚠ Documented here because it is a lot of destruction from one gesture,
+    and because it could plausibly be 'fixed' in either direction by someone
+    who did not know it was deliberate: dragging one node of a selection onto
+    the trash deletes *all* of them, which is what makes it useful for clearing
+    a region and what makes it worth being sure about."""
+    import flow
+    canvas.resize(700, 500)
+    canvas.show()
+    made = []
+    for i in range(3):
+        made.append(canvas.graph.add_node(
+            flow.N_ACTION, {"step": {"kind": "wait", "data": {"ms": 1}}},
+            x=40 + i * 30, y=40))
+    canvas.scene_().rebuild()
+    for n in made:
+        canvas.scene_().node_item(n.id).setSelected(True)
+
+    _drag_node_to(canvas, made[0].id, _trash_centre(canvas))
+    left = [n.id for n in made if n.id in canvas.graph.nodes]
+    assert not left, f"selection survived the trash: {left}"
+
+
+def test_the_trashcan_is_hidden_until_a_drag_starts(canvas):
+    """It cannot swallow a drop it is not showing — `_trash_contains` checks
+    `isVisible()` first — and an always-present bin over the canvas would be
+    both noise and a hazard."""
+    import flow
+    canvas.resize(700, 500)
+    canvas.show()
+    assert not canvas._trash.isVisible(), "the trashcan is showing at rest"
+
+    n = canvas.graph.add_node(flow.N_ACTION,
+                              {"step": {"kind": "wait", "data": {"ms": 1}}},
+                              x=40, y=40)
+    canvas.scene_().rebuild()
+    _drag_node_to(canvas, n.id, _trash_centre(canvas))
+    assert not canvas._trash.isVisible(), "the trashcan stayed up after the drop"
