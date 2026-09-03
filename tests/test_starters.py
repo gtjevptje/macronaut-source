@@ -328,3 +328,47 @@ def test_the_app_seeds_on_startup():
              and isinstance(n.func.value, ast.Name)
              and n.func.value.id == "starters"]
     assert calls, "nothing calls starters.seed_once"
+
+
+@pytest.mark.parametrize("name", [n for n, _ in starters.STARTERS])
+def test_every_node_in_a_starter_can_be_opened(name, tmp_path):
+    """⚠ This exact mistake shipped in five starter scripts once.
+
+    `flow.py` interprets more node types than the UI can edit. A flow written
+    straight against the engine validates, runs, and still contains a node
+    that answers a double-click with nothing — and a starter is the *first*
+    flow a new user opens, so the trap lands on somebody who has not yet
+    learned that anything else in the app works.
+
+    `main._edit_node` opens an editor for exactly four types: action, if, loop
+    and goto. Frames carry their own text dialog on the canvas, and Start, End,
+    Label and Reroute have nothing to configure. Everything else — `set_var`
+    most of all, which is fully implemented and unreachable from the palette —
+    is a node the user cannot open.
+
+    Reads the type list out of `main.py` rather than restating it, so adding an
+    editor relaxes this test on its own instead of leaving a stale copy behind.
+    """
+    import os
+    import re
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(root, "main.py"), encoding="utf-8") as fh:
+        src = fh.read()
+    body = src.split("def _edit_node", 1)[1].split("\n    def ", 1)[0]
+    editable = {getattr(flow, m) for m in re.findall(r"flow\.(N_[A-Z_]+)", body)
+                if hasattr(flow, m)}
+    assert editable, "could not read the editable types out of _edit_node"
+
+    # Types with nothing to configure, so having no editor is correct.
+    nothing_to_edit = {getattr(flow, n) for n in
+                       ("N_START", "N_END", "N_LABEL", "N_REROUTE", "N_FRAME")
+                       if hasattr(flow, n)}
+
+    g = _load_back(starters.build_all()[name], tmp_path, name="openable")
+    for node in g.nodes.values():
+        assert node.type in editable | nothing_to_edit, (
+            f"{name}: a {node.type!r} node cannot be opened by double-clicking "
+            "it, and it is not a type with nothing to configure. This is the "
+            "trap that shipped in five starters once — either give the type an "
+            "editor or do not put it in a starter.")

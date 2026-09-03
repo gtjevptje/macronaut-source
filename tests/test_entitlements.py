@@ -733,6 +733,93 @@ def test_the_sitemap_is_advertised_from_the_domain_root():
 
 
 @needs_site
+def test_every_table_can_scroll_without_taking_the_page_with_it():
+    """⚠ A wide table does not scroll by itself — it drags the whole document.
+
+    Measured 3 September 2026 at a 375px viewport: `tinytask-alternative.html`
+    reported a 439px scroll width. The cause was `white-space: nowrap` on the
+    table's first column, which `width: 100%` cannot shrink. The visible result
+    is not a scrollable table, it is every heading and paragraph on the page
+    sitting off-centre with the reader panning sideways to read prose.
+
+    It was invisible from a desk. The page is correct at any normal window
+    size, and "TinyTask alternative" is a phrase people search on phones.
+
+    Pins the structural half, which is what a test can see: any table in a
+    built page sits inside an element that can scroll on its own. The CSS that
+    lets the labels wrap is the belt; this is the braces, and it keeps holding
+    when someone adds a longer row label years from now.
+    """
+    site = Path(__file__).resolve().parent.parent / "site"
+    # ⚠ Built pages only. `site/*.html` also matches `*.template.html`, whose
+    # stylesheet is still the literal {{SHARED_CSS}} token — so a template
+    # can never satisfy a check for a CSS rule, and the first version of this
+    # test failed on one.
+    built = [p for p in sorted(site.glob("*.html"))
+             if not p.name.endswith(".template.html")]
+    if not built:
+        pytest.skip("no pages are built in this checkout")
+
+    for page in built:
+        raw = page.read_text(encoding="utf-8")
+        # ⚠ Strip <style> and <script> first. The comment explaining this very
+        # rule contains the string "<table>", and the JSON-LD can mention one
+        # too — scanning them found a "table" with no markup around it at all
+        # and failed on the explanation rather than on any page element.
+        html = re.sub(r"<(style|script)\b.*?</\1>", "", raw, flags=re.S | re.I)
+        for m in re.finditer(r"<table\b", html):
+            before = html[:m.start()]
+            # The nearest unclosed element before the table must be a scroller.
+            opens = re.findall(r'<div class="([^"]*)"', before)
+            assert opens and "tblwrap" in opens[-1], (
+                f"{page.name}: a <table> is not inside a scroll container, so "
+                "a cell too wide to wrap will scroll the page instead of the "
+                "table")
+        # ⚠ Against `raw`, not `html` — the rule lives in the <style> block
+        # that was stripped above, so checking the stripped copy can never
+        # find it. That assertion failed on its own construction.
+        if "<table" in html:
+            assert "overflow-x:auto" in raw.replace(" ", ""), (
+                f"{page.name} has a table but no overflow-x rule to go with it")
+
+
+@needs_site
+def test_the_privacy_policy_does_not_hardcode_when_it_was_updated():
+    """⚠ It said 31 August while carrying a correction stamped 3 September.
+
+    A privacy policy contradicting itself about its own currency is a bad look
+    on the one page whose whole job is surviving a close reading — and it is
+    the Privacy Policy URL on the SignPath application. The date was a literal
+    in the template, so editing the page did not touch it.
+
+    It comes from git now: the commit date of `privacy.template.html`, which is
+    a claim about the *content*. ⚠ Deliberately not `_today()` — stamping every
+    site rebuild would tell a reader the policy changed on a day it did not,
+    which is worse than a stale date because it destroys the only signal the
+    line carries.
+    """
+    bs = _build_site_module()
+    site = Path(__file__).resolve().parent.parent / "site"
+    tpl = (site / "privacy.template.html").read_text(encoding="utf-8")
+
+    assert "{{PRIVACY_UPDATED}}" in tpl, "the date is not a token any more"
+    assert not re.search(r"Last updated\s+\d", tpl), (
+        "the privacy template hardcodes a date again; it will rot the next "
+        "time the page is edited and nothing will say so")
+
+    stamp = bs.privacy_updated()
+    assert stamp, "no date could be established at all"
+    assert re.fullmatch(r"\d{1,2} [A-Z][a-z]+ \d{4}", stamp), stamp
+
+    built = site / "privacy.html"
+    if built.is_file():
+        text = built.read_text(encoding="utf-8")
+        assert f"Last updated {stamp}" in text
+        assert "{{" not in text.split("</head>", 1)[-1], (
+            "an unreplaced token reached the rendered privacy page")
+
+
+@needs_site
 def test_nothing_claims_the_build_is_byte_identical():
     """⚠ This claim has now been wrong twice, in two separate correction passes.
 
