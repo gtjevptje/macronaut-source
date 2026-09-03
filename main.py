@@ -218,7 +218,13 @@ def _label_width(b: QPushButton) -> int:
         return hint
 
 from keystrokes import display_combo
-from recorder   import SequenceRecorder, SequenceManager, SeqStep
+# ⚠ SequenceManager is deliberately NOT imported here. It owns the pre-2.0
+# linear playback path (recorder.PlaybackWorker), which nothing in this file
+# has called since flow_exec.FlowWorker replaced it — it was imported and
+# unused, which reads as "this is how playback works" to anyone following the
+# imports. Playback is `flow_exec.FlowWorker`; see the note on those two
+# classes in recorder.py.
+from recorder   import SequenceRecorder, SeqStep
 import settings as settings_mod
 from settings   import SettingsManager, data_dir, scripts_dir
 from stats      import StatsManager, Session

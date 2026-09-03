@@ -453,6 +453,28 @@ class SequenceRecorder(QObject):
 # ── Playback ──────────────────────────────────────────────────────────────────
 
 class PlaybackWorker(QObject):
+    """⚰ The pre-2.0 linear playback engine. Nothing in the app reaches it.
+
+    Read this before spending time here. It replays a flat `List[SeqStep]`,
+    which is what Macronaut was before the node canvas. The live engine is
+    **`flow_exec.FlowWorker`**, and a fix belongs there.
+
+    Its only constructor is `SequenceManager.play()` below, and nothing calls
+    that: `main.py` imported `SequenceManager` and never used it, which is the
+    kind of dead import that reads as "this is how playback works" to anyone
+    following the imports. That import is gone as of 3 September 2026.
+
+    ⚠ It is *not* a copy of the live path, so do not read it as documentation
+    of one. It predates the selectable input backends, the per-step `send_as`
+    choice, hold/release keys, drag and scroll — `_exec` below handles a
+    smaller set of step kinds than `flow_exec.do_action` does today.
+
+    Kept rather than deleted because this mount refuses deletes and because
+    removing a public class from a published module is a decision rather than
+    a tidy-up. `SeqStep` above is emphatically **live** — `main.py` uses it in
+    44 places, and a flow's `data["step"]` is exactly `SeqStep.to_dict()`.
+    """
+
     step_executed  = Signal(int)   # index of completed step
     status_changed = Signal(str)
     finished       = Signal()
@@ -782,7 +804,20 @@ class PlaybackWorker(QObject):
 # ── Sequence manager ──────────────────────────────────────────────────────────
 
 class SequenceManager:
-    """Handles save/load and owns the playback thread."""
+    """⚰ Save/load and the playback thread for the pre-2.0 linear path.
+
+    Nothing in the app constructs this — see `PlaybackWorker` above. Flows are
+    saved and loaded by `flow.FlowGraph.save` / `.load`, and run by
+    `flow_exec.FlowWorker`.
+
+    ⚠ `stop()` is still worth reading even though it is unreachable, and
+    `tests/test_recorder_hold.py` still exercises it. It holds the
+    retire-the-thread logic that `SequenceTab.stop_playback` had to learn the
+    hard way: destroying a QThread that is still running is a Qt-level fatal
+    error rather than an exception, and the wait times out routinely because
+    OCR and image matching are not interruptible. That reasoning is live even
+    where this class is not.
+    """
 
     VERSION = 1
 
