@@ -37,6 +37,8 @@ from __future__ import annotations
 
 import time
 import json
+import os
+import tempfile
 import copy
 from collections import namedtuple
 from typing import Optional, List, Dict, Any, Callable
@@ -674,8 +676,44 @@ class FlowGraph:
         return FlowGraph.from_dict(copy.deepcopy(self.to_dict()))
 
     def save(self, path: str):
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(self.to_dict(), f, indent=2)
+        """Write the flow, atomically.
+
+        ⚠ `open(path, "w")` truncates the destination *before* a single byte is
+        written, so anything that interrupts the write leaves the user with an
+        empty file and no original to fall back on: a non-serialisable value in
+        a node's data, a full disk, antivirus holding the handle, the machine
+        losing power. This file **is** the work — flows are plain JSON the user
+        keeps, there is no undo, and nothing else holds a copy.
+
+        So it goes to a temporary file beside the target and is then moved over
+        it. `os.replace` is atomic on Windows for a same-volume move, which is
+        why the temporary is created in the destination's own directory rather
+        than in %TEMP% — across volumes it degrades to a copy and the guarantee
+        is gone.
+
+        A failure now leaves the previous version of the flow exactly where it
+        was, which is the whole point.
+        """
+        target = os.path.abspath(path)
+        directory = os.path.dirname(target) or "."
+        os.makedirs(directory, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=directory, prefix=".flow-", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(self.to_dict(), f, indent=2)
+                # The bytes have to be with the OS before the rename, or a
+                # crash can leave the rename done and the content not.
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, target)
+        except BaseException:
+            # Never leave a .flow-*.tmp behind for the user to wonder about,
+            # and never let the failure take the existing file with it.
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
 
     @classmethod
     def from_dict(cls, payload: dict) -> "FlowGraph":

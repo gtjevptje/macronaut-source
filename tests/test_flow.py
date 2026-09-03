@@ -1973,3 +1973,79 @@ def test_the_wait_node_says_ten_minutes_not_six_hundred_thousand():
     assert flow.summarize_node(n) == "Wait 10 min"
     n.data["step"]["data"]["ms"] = 250
     assert flow.summarize_node(n) == "Wait 250 ms"
+
+
+# ── saving a flow is atomic ───────────────────────────────────────────────────
+
+def test_a_failed_save_leaves_the_previous_flow_intact(tmp_path, monkeypatch):
+    """⚠ `open(path, "w")` truncates before writing, and this file IS the work.
+
+    Flows are plain JSON the user keeps; there is no undo and nothing else
+    holds a copy. So a write that dies part-way used to leave an empty file
+    where an afternoon's work had been — a full disk, antivirus holding the
+    handle, or simply a value in a node's data that `json` cannot serialise.
+
+    The save writes beside the target and moves it over, so a failure now
+    leaves the previous version exactly where it was.
+    """
+    import json as _json
+    import flow
+
+    good = flow.FlowGraph()
+    good.add_node(flow.N_ACTION, {"step": {"kind": "wait", "data": {"ms": 250}}})
+    path = tmp_path / "keepme.json"
+    good.save(str(path))
+    original = path.read_text(encoding="utf-8")
+    assert "250" in original
+
+    boom = flow.FlowGraph()
+    boom.add_node(flow.N_ACTION, {"step": {"kind": "wait", "data": {"ms": 999}}})
+
+    def explode(*a, **k):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(_json, "dump", explode)
+    with pytest.raises(RuntimeError):
+        boom.save(str(path))
+
+    assert path.read_text(encoding="utf-8") == original, (
+        "a failed save destroyed the flow that was already there")
+
+
+def test_a_failed_save_leaves_no_temporary_file_behind(tmp_path, monkeypatch):
+    """A stray `.flow-xxxx.tmp` in the scripts folder is not harmless: the
+    library lists what is in that directory, and a user who finds one has no
+    way to know whether it matters."""
+    import json as _json
+    import flow
+
+    g = flow.FlowGraph()
+    g.add_node(flow.N_ACTION, {"step": {"kind": "wait", "data": {"ms": 1}}})
+
+    monkeypatch.setattr(_json, "dump",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("nope")))
+    with pytest.raises(OSError):
+        g.save(str(tmp_path / "x.json"))
+
+    leftovers = [p.name for p in tmp_path.iterdir()]
+    assert leftovers == [], f"temporary files left behind: {leftovers}"
+
+
+def test_saving_still_round_trips_after_the_atomic_rewrite(tmp_path):
+    """The rewrite must not have changed what lands on disk — same JSON, same
+    reload, and a fresh directory is still created rather than erroring."""
+    import flow
+
+    g = flow.FlowGraph()
+    a = g.add_node(flow.N_ACTION,
+                   {"step": {"kind": "wait", "data": {"ms": 1234}}})
+    g.add_edge(g.start_node().id, a.id)
+
+    nested = tmp_path / "does" / "not" / "exist" / "flow.json"
+    g.save(str(nested))
+    assert nested.is_file(), "save no longer creates the directory it needs"
+
+    back = flow.FlowGraph.load(str(nested))
+    assert len(back.nodes) == len(g.nodes)
+    assert any((n.data.get("step") or {}).get("data", {}).get("ms") == 1234
+               for n in back.nodes.values())
