@@ -740,3 +740,105 @@ def test_no_module_uses_a_name_it_never_defines():
 
     assert not offenders, "names used but never defined:\n" + "\n".join(
         f"  {name}: {', '.join(miss)}" for name, miss in offenders.items())
+
+
+# ⚠ The public definitions that nothing references, as of 3 September 2026.
+# This is a ratchet, not a wishlist: the test fails on anything NEW, so the set
+# can shrink but not grow. Each entry says why it still exists, because "it is
+# in the list" is not a reason.
+KNOWN_UNREFERENCED = {
+    # Orphaned modules, labelled as such in their own docstrings.
+    ("clicker.py", "ClickerEngine"),
+    ("orb.py", "FloatingOrb"),
+    # Pre-2.0 UI left in main.py. 147 lines between the four.
+    ("main.py", "FlowLayout"),
+    ("main.py", "StarfieldBar"),
+    ("main.py", "StepTable"),
+    ("main.py", "logo_pixmap"),
+    # A typing Protocol, and a duration helper the timeline stopped needing.
+    ("flow.py", "ExecutorProtocol"),
+    ("flow.py", "expected_ms"),
+    # Written for a "clear my stats" control that was never built.
+    ("runstats.py", "forget"),
+    # Reasonable API nobody calls; harmless.
+    ("ocr.py", "reset_engine"),
+    # ⚠ Dead AND ineffective — see its docstring. Kept because a future engine
+    # that really has resources to build would override `_warmup()`.
+    ("ocr.py", "warmup"),
+}
+
+
+def test_no_new_public_code_becomes_unreachable():
+    """⚠ Four dead things turned up in one day, each by a separate accident.
+
+    `clicker.py` and `orb.py` described themselves as live. `PlaybackWorker`
+    looked live because `main.py` imported `SequenceManager` and never used it.
+    `ocr.warmup` looked live because it returns True. None of that is visible
+    in a diff, and none of it fails anything — dead code is by definition never
+    executed, so no test can trip over it.
+
+    This is the sweep that found the rest, kept as a ratchet. It walks every
+    public top-level class and function in the app modules and counts
+    references *everywhere*, including inside its own module and inside string
+    literals, so a name reached by `getattr` or named in the spec still counts.
+
+    A new entry means one of two things and both want a decision: something was
+    orphaned by a change, or something was written and never wired up. Say
+    which in the docstring, then add it here.
+    """
+    import ast
+    import collections
+
+    app = sorted(glob.glob(os.path.join(ROOT, "*.py")))
+    searched = app + sorted(glob.glob(os.path.join(ROOT, "tests", "*.py"))) \
+                   + sorted(glob.glob(os.path.join(ROOT, "tools", "*.py")))
+    # ⚠ This file cannot be part of its own scan. KNOWN_UNREFERENCED spells
+    # every name out as a string literal, and string references count — so
+    # listing something as unreferenced was enough to make it referenced, and
+    # the allowlist silently emptied the finding it exists to record. The first
+    # run of this test failed on exactly that.
+    searched = [p for p in searched
+                if os.path.basename(p) != os.path.basename(__file__)]
+
+    defined = {}
+    for path in app:
+        with open(path, encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+        for node in tree.body:
+            if (isinstance(node, (ast.ClassDef, ast.FunctionDef))
+                    and not node.name.startswith("_")):
+                defined.setdefault(node.name, os.path.basename(path))
+
+    uses = collections.Counter()
+    for path in searched:
+        with open(path, encoding="utf-8") as fh:
+            src = fh.read()
+        for node in ast.walk(ast.parse(src)):
+            if isinstance(node, ast.Name):
+                uses[node.id] += 1
+            elif isinstance(node, ast.Attribute):
+                uses[node.attr] += 1
+            elif isinstance(node, ast.ImportFrom):
+                for a in node.names:
+                    uses[a.name] += 1
+        # Named in a string: getattr, a .spec hiddenimport, a settings key.
+        for name in defined:
+            uses[name] += len(re.findall(r'["\']%s["\']' % re.escape(name), src))
+
+    unreferenced = {(home, name) for name, home in defined.items()
+                    if uses[name] == 0}
+
+    new = sorted(unreferenced - KNOWN_UNREFERENCED)
+    assert not new, (
+        "public definitions that nothing references anywhere:\n"
+        + "\n".join(f"  {h}: {n}" for h, n in new)
+        + "\nEither wire it up, or add it to KNOWN_UNREFERENCED with a reason.")
+
+    # ⚠ The ratchet's other direction. A name that gets used again, or is
+    # deleted, must leave the list — otherwise the list slowly becomes fiction
+    # and stops meaning anything, which is how a stale allowlist always ends.
+    stale = sorted(KNOWN_UNREFERENCED - unreferenced)
+    assert not stale, (
+        "these are listed as unreferenced but are not:\n"
+        + "\n".join(f"  {h}: {n}" for h, n in stale)
+        + "\nRemove them from KNOWN_UNREFERENCED.")
