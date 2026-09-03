@@ -4765,3 +4765,82 @@ def test_the_trashcan_is_hidden_until_a_drag_starts(canvas):
     canvas.scene_().rebuild()
     _drag_node_to(canvas, n.id, _trash_centre(canvas))
     assert not canvas._trash.isVisible(), "the trashcan stayed up after the drop"
+
+
+# ── Clear ─────────────────────────────────────────────────────────────────────
+#
+# ⚠ The other destructive control, and it had no tests either. Unlike the
+# trashcan it takes *everything*, and unlike the trashcan its only safeguard is
+# a modal question — which is exactly the kind of thing a later simplification
+# removes on the grounds that it is annoying.
+
+def _wired_flow(tab, n=3):
+    """A flow with real work in it, so `_clear` does not take its early exit."""
+    import flow
+    for i in range(n):
+        tab._graph.add_node(flow.N_ACTION,
+                            {"step": {"kind": "wait", "data": {"ms": 1}}},
+                            x=40 + i * 30, y=40)
+    tab._canvas.set_graph(tab._graph)
+    return len(tab._graph.nodes)
+
+
+def test_clear_asks_before_deleting_everything(window, main_mod, monkeypatch):
+    """⚠ The safeguard is a question and nothing else.
+
+    `Clear` is styled `danger` and wipes every node on the canvas. There is no
+    undo in this app, and a flow can be an afternoon's work. So the only thing
+    between a misclick and losing it is this dialog: assert it is actually
+    asked, not merely that clearing works.
+    """
+    tab = window._sequence_tab
+    tab._graph = tab._new_graph()
+    before = _wired_flow(tab)
+    assert before > 1
+
+    asked = []
+
+    def fake_question(parent, title, text, *a, **k):
+        asked.append((title, text))
+        return main_mod.QMessageBox.No
+
+    monkeypatch.setattr(main_mod.QMessageBox, "question", fake_question)
+    tab._clear()
+
+    assert asked, "Clear deleted the flow without asking"
+    assert len(tab._graph.nodes) == before, (
+        "answering No still cleared the canvas")
+
+
+def test_clear_wipes_the_canvas_when_the_answer_is_yes(window, main_mod,
+                                                       monkeypatch):
+    """The positive case, so the guard above cannot pass on a Clear that never
+    clears anything."""
+    tab = window._sequence_tab
+    tab._graph = tab._new_graph()
+    _wired_flow(tab)
+
+    monkeypatch.setattr(main_mod.QMessageBox, "question",
+                        lambda *a, **k: main_mod.QMessageBox.Yes)
+    tab._clear()
+
+    import flow
+    assert not flow.has_work(tab._graph), "Yes did not clear the flow"
+    # A cleared canvas is a *new* flow, not an empty one: Start has to survive
+    # or the next node added has nothing to chain onto.
+    assert tab._graph.start_node() is not None, "Clear left no Start node"
+
+
+def test_clear_does_not_nag_when_there_is_nothing_to_clear(window, main_mod,
+                                                           monkeypatch):
+    """A fresh canvas holds only Start. Asking "delete all nodes?" there is a
+    dialog about nothing, and the early return exists to avoid it."""
+    tab = window._sequence_tab
+    tab._graph = tab._new_graph()
+    tab._canvas.set_graph(tab._graph)
+
+    asked = []
+    monkeypatch.setattr(main_mod.QMessageBox, "question",
+                        lambda *a, **k: asked.append(1) or main_mod.QMessageBox.Yes)
+    tab._clear()
+    assert not asked, "Clear asked about an empty canvas"
