@@ -82,12 +82,23 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # ⚠ requirements.txt has lower bounds and no upper ones, so this line
-      # resolves to whatever is newest today -- which is not what the last
-      # release was built against. The first CI build came out 3.4 MB larger
-      # than the shipped 2.3.3 because a clean install now picks up OpenCV 5
-      # where that binary has OpenCV 4. Recording the resolved set makes the
-      # next such drift visible in the run instead of in a user's download.
+      # This step earned itself. The first CI build came out 3.4 MB larger than
+      # the shipped 2.3.3: requirements.txt had floors and no ceilings, so a
+      # clean install picked up OpenCV 5 where that binary has OpenCV 4 -- a
+      # whole major version of the library doing the image matching, swapped
+      # underneath the app, with a slightly bigger file as the only symptom. It
+      # could as easily have been a release that went out that way.
+      #
+      # Ceilings were added on 31 August 2026 and that specific drift is now
+      # bounded -- verified on 3 September, when this step reported
+      # `opencv-python==4.14.0.94`: a 4.x, where the unbounded resolve had
+      # picked 5.0.0.93.
+      #
+      # The step stays, because ceilings stop majors and nothing stops minors.
+      # That same run resolved 4.14.0.94 while the shipped 2.3.3 was built
+      # against 4.13.0.92, and PySide6 6.11.2 against the release's 6.11.1.
+      # Small drift, but it is drift, and recording it makes the next one
+      # visible in the run rather than in somebody's download.
       - name: Record the exact dependency set this build used
         shell: pwsh
         run: |
