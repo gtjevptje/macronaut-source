@@ -398,3 +398,67 @@ def test_keygen_refuses_to_overwrite_an_existing_signing_key(dev_dir):
     """Regenerating orphans every licence already sold, with no way to reach
     the people holding them. It has to be an explicit --force."""
     assert mint_license.cmd_keygen(type("A", (), {"force": False})()) == 1
+
+
+def test_a_paid_key_actually_unlocks_the_thing_it_was_sold_for(
+        dev_dir, isolated_data_dir, monkeypatch):
+    """⚠⚠ The join nobody had tested: money in, feature out.
+
+    Both halves were covered and the seam between them was not. `fulfil` is
+    tested to mint a key and record it; activation is tested to persist;
+    `entitlements` is tested to refuse a Pro flow. Nothing walked the whole
+    way — issue a key the way a real order would, activate it the way the
+    dialog does, and confirm the flow that was refused a moment earlier now
+    runs.
+
+    That seam is exactly where a `PUBLIC_KEY_HEX` mismatch, a canonical-form
+    difference or a tier-mapping slip would live, and this is the one failure
+    in the product with a truly asymmetric cost: a wrongly *rejected* key gets
+    an e-mail within the hour, while a wrongly *accepted* one costs revenue
+    nobody ever hears about. This walks the rejected direction, which is the
+    one a paying customer meets.
+
+    ⚠ Everything is redirected: `dev_dir` moves the signing key and the ledger
+    into a tmpdir so no imaginary customer is filed beside a real one, and
+    `isolated_data_dir` moves the activation file so the developer's own
+    machine is not left licensed by a test run.
+    """
+    import entitlements
+    import flow
+
+    fulfil = _fulfil_or_skip()
+
+    # The shipped verifier has to agree with the signing key this test made.
+    monkeypatch.setattr(licensing, "PUBLIC_KEY_HEX",
+                        mint_license.public_key(mint_license.load_seed()).hex())
+    licensing.refresh()
+
+    # A flow the free tier refuses: a Detect step is Pro by policy.
+    g = flow.FlowGraph()
+    det = g.add_node(
+        flow.N_ACTION,
+        {"step": {"kind": sorted(flow.DETECT_KINDS)[0], "data": {}}})
+    start = g.start_node()
+    if start is not None:
+        g.add_edge(start.id, det.id)
+
+    monkeypatch.setattr(entitlements, "ENFORCED", True)
+    assert not entitlements.runs_on_free(g), (
+        "the flow used to prove the gate is not actually a Pro flow")
+    ok, why, feats = entitlements.check(g)
+    assert not ok, "the gate let a Pro flow through unpaid"
+    assert feats, "the refusal names no feature, so it cannot explain itself"
+
+    # Now the order arrives.
+    key = fulfil.fulfil("buyer@example.com", "ORD-4242")
+    assert key, "fulfilment produced no key"
+
+    assert licensing.activate(key), (
+        "a key straight from fulfilment was refused by the app that was sold "
+        "it — this is the failure a paying customer discovers")
+    licensing.refresh()
+
+    ok_after, why_after, _ = entitlements.check(g)
+    assert ok_after, (
+        "the licence activated but the flow it was bought for is still "
+        f"refused ({why_after!r}); the money bought nothing")
