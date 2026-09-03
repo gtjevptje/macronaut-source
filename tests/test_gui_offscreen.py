@@ -4844,3 +4844,40 @@ def test_clear_does_not_nag_when_there_is_nothing_to_clear(window, main_mod,
                         lambda *a, **k: asked.append(1) or main_mod.QMessageBox.Yes)
     tab._clear()
     assert not asked, "Clear asked about an empty canvas"
+
+
+def test_clearing_the_session_history_asks_first(window, main_mod, monkeypatch):
+    """The third destructive control, and the last one without a test.
+
+    Lower stakes than the canvas two — this deletes recorded session stats,
+    not somebody's flow — but the shape is identical: a `danger` button whose
+    only safeguard is a question, deleting something that is not recoverable
+    and not backed up anywhere. `StatsManager.clear_history` empties the list
+    and writes the file, so there is nothing to undo from.
+    """
+    tab = window._stats_tab
+    stats = tab._stats
+
+    from stats import Session
+    from datetime import datetime
+    stats.sessions.append(Session(start_time=datetime.now()))
+    before = len(stats.sessions)
+    assert before, "no history to clear, so this test proves nothing"
+
+    asked = []
+
+    def refuse(parent, title, text, *a, **k):
+        asked.append(title)
+        return main_mod.QMessageBox.No
+
+    monkeypatch.setattr(main_mod.QMessageBox, "question", refuse)
+    tab._clear_history()
+    assert asked, "history was deleted without asking"
+    assert len(stats.sessions) == before, "answering No still deleted it"
+
+    monkeypatch.setattr(main_mod.QMessageBox, "question",
+                        lambda *a, **k: main_mod.QMessageBox.Yes)
+    tab._clear_history()
+    assert not stats.sessions, "Yes did not clear the history"
+    assert tab._table.rowCount() == 0, (
+        "the table still shows rows for sessions that no longer exist")
