@@ -676,7 +676,26 @@ def status_message() -> str:
 
 
 def warmup() -> bool:
-    """Build any heavy engine resources ahead of time (e.g. on a worker)."""
+    """⚠ Does nothing for the engine that ships, and returns True anyway.
+
+    The docstring here used to promise it built heavy resources ahead of time.
+    `_warmup()` is a base-class no-op and the Windows OCR engine — the only one
+    left since RapidOCR was removed in 2.0.12 — does not override it. So this
+    returns True having done nothing, which is the worst shape a claim can
+    take: someone wiring it up to remove a cold start would measure no change
+    and conclude the cold start was imaginary.
+
+    Nothing calls it. Measured 3 September 2026, and the cold start is real but
+    small and *not* where this function looks for it: `warmup()` on a cold
+    engine takes **0.0 ms**, while the first `read_words` takes **33 ms**
+    against **4 ms** once warm. The ~29 ms lives in the first recognition
+    itself, not in constructing the engine, so calling this earlier moves
+    nothing.
+
+    Kept because a future engine that genuinely has resources to build would
+    override `_warmup()` and this would start meaning something. Until then it
+    is an interface with one implementation that declines to implement it.
+    """
     eng = get_engine()
     if not eng.available:
         return False
