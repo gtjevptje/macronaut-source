@@ -47,6 +47,37 @@ opening the PR:
   realistic false positive. If it trips, that is a *scanner* verdict, not a
   manifest bug, and the fix is a signed binary rather than a manifest edit.
 
+  ✅ **Measured 3 September 2026, and it is better news than this note assumed.**
+  The published 2.3.3 binary — downloaded from the release URL in `update.json`,
+  SHA-256 verified against the manifest first — was scanned with Windows
+  Defender directly:
+
+      MpCmdRun.exe -Scan -ScanType 3 -File Macronaut.exe -DisableRemediation
+      → "found no threats", exit 0
+
+  That is the engine family the winget sandbox runs, so the specific failure
+  this note worried about is not currently happening. It is one engine on one
+  machine with one set of definitions, so it is evidence rather than a
+  guarantee — definitions change, and a *reputation*-based verdict (which is
+  what an unsigned binary with no download history actually risks) is not the
+  same thing as a signature hit and would not show up here.
+
+- ⚠ **There is no VirusTotal record for the shipped binary at all** — checked
+  3 September, the hash returns "Item not found", meaning nobody has ever
+  submitted it. Worth deciding deliberately rather than leaving to chance:
+
+  Submitting it would establish a public, checkable verdict across ~70 engines,
+  which is a far stronger answer to "why does my antivirus complain" than any
+  paragraph on the website, and it would surface any false positive **before**
+  a winget reviewer or a user finds it, while there is still time to appeal.
+
+  Against: a VT submission is public and permanent — the sample is shared with
+  vendors and subscribers, and it cannot be withdrawn. Today there is no record;
+  after submitting there is one, and if an engine does false-positive, that
+  record is what a searcher finds. The file is already public on GitHub, so
+  nothing is being disclosed — the question is only whether to create the
+  record. **This is the maintainer's call, not something to do in passing.**
+
 `PackageIdentifier` is `GerbenvanPoucke.Macronaut`. No `g/GerbenvanPoucke`
 publisher folder exists upstream yet and no package matches "Macronaut", so the
 name is free. It is permanent once merged — a rename means a new package.

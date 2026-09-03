@@ -12,8 +12,12 @@ and the source link the app shows is the repo that actually exists. A relicence
 back to proprietary is a decision, not an accident — but it should not be
 possible to do it by editing one line and having the suite stay green.
 """
+import glob
+import json
 import os
 import re
+
+import pytest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -117,6 +121,65 @@ def test_the_readme_sends_a_searcher_to_the_download_before_the_small_print():
     # the SignPath application as something this project states up front.
     assert "will not be the *same file*" in readme
     assert "commit history starts on the day the project went open source" in readme
+
+
+def test_the_scoop_and_winget_manifests_describe_the_same_download():
+    """⚠ Two manifests, one binary, and nothing regenerates either of them.
+
+    `packaging/scoop/macronaut.json` and the winget YAMLs each hardcode a
+    version, a URL and a SHA-256. They are hand-maintained, they are not
+    published yet, and the realistic mistake is updating one and forgetting the
+    other — at which point the surviving stale one is submitted to a public
+    package repository and rejected. A rejected package PR is a public record
+    that is awkward to reopen, which is exactly why this is worth catching in
+    the suite instead of in somebody else's CI.
+
+    Deliberately checks the two against *each other* rather than against
+    `version.__version__`. Coupling them to the app's version would fail every
+    release the moment `release.py --bump` runs, before there is anything to
+    regenerate them from — a test that is red for a correct reason nobody can
+    act on gets disabled, and then catches nothing.
+
+    Parsed with a regex rather than PyYAML, which is not in requirements.txt
+    and so is not guaranteed on a clean clone or on the CI runner.
+    """
+    scoop_file = os.path.join(ROOT, "packaging", "scoop", "macronaut.json")
+    if not os.path.isfile(scoop_file):
+        pytest.skip("packaging/ is not in this checkout")
+
+    with open(scoop_file, encoding="utf-8") as fh:
+        scoop = json.load(fh)
+    s_arch = scoop["architecture"]["64bit"]
+
+    pattern = os.path.join(ROOT, "packaging", "winget", "**", "*.installer.yaml")
+    wingets = sorted(glob.glob(pattern, recursive=True))
+    assert len(wingets) == 1, (
+        "expected one winget installer manifest, got %d" % len(wingets))
+    with open(wingets[0], encoding="utf-8") as fh:
+        w = fh.read()
+
+    def field(name):
+        m = re.search(rf"^\s*{name}:\s*(\S+)\s*$", w, re.MULTILINE)
+        assert m, f"winget installer manifest has no {name}"
+        return m.group(1)
+
+    assert scoop["version"] == field("PackageVersion"), (
+        f"scoop says {scoop['version']}, winget says {field('PackageVersion')}")
+    assert s_arch["url"] == field("InstallerUrl"), "the two point at different files"
+    # winget wants the digest uppercase and scoop wants it lowercase; the point
+    # is that they are the same bytes, not the same string.
+    assert s_arch["hash"].lower() == field("InstallerSha256").lower(), (
+        "the two manifests carry different SHA-256s for the same download")
+
+    # ⚠ Both must name the canonical repo, not `macronaut-releases`. That name
+    # only still resolves because of GitHub's rename redirect, and CLAUDE.md
+    # records that the redirect dies the instant a repo takes that name again.
+    # update.json is stuck with it forever in already-shipped builds; nothing
+    # written today should add to that.
+    for url in (s_arch["url"], field("InstallerUrl")):
+        assert "macronaut-releases" not in url, (
+            f"{url} depends on the rename redirect — use gtjevptje/Macronaut")
+        assert scoop["version"] in url, "the URL does not match the version it claims"
 
 
 def test_third_party_notices_record_the_lgpl_election():
