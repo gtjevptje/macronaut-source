@@ -4513,3 +4513,136 @@ def test_every_node_the_engine_runs_can_be_created_from_the_palette(window, no_e
     # already looks like what was asked for while it is still being configured.
     assert node.data.get("preset_kind") == "autoclick"
     assert flow.action_kind(node) == "autoclick"
+
+
+# ── the update dialog ─────────────────────────────────────────────────────────
+#
+# ⚠ This dialog had **no tests at all** until 3 September 2026, and CLAUDE.md
+# listed it as one of the things that "needs a human at a window". Most of it
+# does not. What genuinely needs eyes is whether it *looks* right; whether the
+# notes render, whether Install is offered when there is nothing to install,
+# and what each button returns are all reachable under the offscreen platform —
+# which is the policy this file exists to apply.
+#
+# It matters more than a dialog usually would: it is the only screen in the app
+# whose whole job is telling someone what a new version changes, and it is
+# where the release notes are read. Eight releases shipped with none.
+
+def _update_info(**kw):
+    import updater
+    fields = dict(version="9.9.9", url="https://example.invalid/Macronaut.exe",
+                  sha256="0" * 64, size=1234, notes="", mandatory=False)
+    fields.update(kw)
+    return updater.UpdateInfo(**fields)
+
+
+def test_the_update_dialog_shows_the_release_notes(qapp):
+    """The notes are the entire point of the dialog.
+
+    A user is being asked to replace a working program with a different one;
+    what changed is the only information that makes that a decision rather
+    than a leap. `update.json` carries them, and this is where they surface.
+    """
+    import updater_ui
+    notes = "Fixed the thing.\n\nAlso fixed the other thing."
+    dlg = updater_ui.UpdateDialog(_update_info(notes=notes))
+    try:
+        from PySide6.QtWidgets import QLabel, QTextBrowser
+        browsers = dlg.findChildren(QTextBrowser)
+        assert browsers, (
+            "the dialog has no text view at all, so the notes cannot be shown")
+        assert any(notes in w.toPlainText() for w in browsers), (
+            "the release notes are not displayed anywhere in the update dialog")
+
+        import version
+        labels = " ".join(w.text() for w in dlg.findChildren(QLabel))
+        assert "9.9.9" in labels, "the dialog does not name the new version"
+        assert version.__version__ in labels, (
+            "the dialog does not say which version you are on, so 'is this "
+            "newer' is left to the reader")
+    finally:
+        dlg.deleteLater()
+
+
+def test_install_is_refused_until_a_verified_download_exists(qapp, monkeypatch):
+    """⚠ The safety property, not a nicety.
+
+    `Install and restart` hands a path to the swap. With nothing staged there
+    is no path, and the swap is the one step in the update with no do-over —
+    `tools/rehearse_swap.py` exists because of exactly that. So the button is
+    disabled until a download has been fetched *and* checked against the
+    manifest's SHA-256, and the status line says which state it is in.
+    """
+    import updater, updater_ui
+    monkeypatch.setattr(updater, "is_frozen", lambda: True)
+
+    dlg = updater_ui.UpdateDialog(_update_info(notes="x"))
+    try:
+        assert not dlg._install.isEnabled(), (
+            "Install is offered with nothing staged — it would try to swap in "
+            "a file that does not exist")
+        assert "download" in dlg._status.text().lower()
+
+        dlg.set_staged(r"C:\somewhere\Macronaut.exe")
+        assert dlg._install.isEnabled(), "a verified download does not enable Install"
+        assert "verified" in dlg._status.text().lower(), (
+            "the status does not say the download was verified, which is the "
+            "reason it is safe to press the button")
+    finally:
+        dlg.deleteLater()
+
+
+def test_running_from_source_says_so_instead_of_offering_a_swap(qapp, monkeypatch):
+    """Not frozen means there is no .exe to replace.
+
+    Silently disabling the button would read as a broken dialog. It explains.
+    """
+    import updater, updater_ui
+    monkeypatch.setattr(updater, "is_frozen", lambda: False)
+    dlg = updater_ui.UpdateDialog(_update_info(notes="x"))
+    try:
+        assert not dlg._install.isEnabled()
+        assert "source" in dlg._status.text().lower(), dlg._status.text()
+    finally:
+        dlg.deleteLater()
+
+
+def test_each_button_reports_the_choice_it_names(qapp, monkeypatch):
+    """Skip / Later / Install are three different answers and the caller acts
+    on them differently — Skip suppresses this version for good."""
+    import updater, updater_ui
+    monkeypatch.setattr(updater, "is_frozen", lambda: True)
+    for button, expected in (("_skip", updater_ui.UpdateDialog.SKIP),
+                             ("_later", updater_ui.UpdateDialog.LATER),
+                             ("_install", updater_ui.UpdateDialog.INSTALL)):
+        dlg = updater_ui.UpdateDialog(_update_info(notes="x"),
+                                      staged_path=r"C:\x\Macronaut.exe")
+        try:
+            getattr(dlg, button).click()
+            assert dlg.choice == expected, (
+                f"{button} reported {dlg.choice!r}, not {expected!r}")
+        finally:
+            dlg.deleteLater()
+
+
+def test_progress_and_errors_reach_the_dialog(qapp, monkeypatch):
+    """A download with no visible progress reads as a hang, and an error that
+    leaves the bar running reads as one too."""
+    import updater, updater_ui
+    monkeypatch.setattr(updater, "is_frozen", lambda: True)
+    dlg = updater_ui.UpdateDialog(_update_info(notes="x"))
+    try:
+        dlg.on_progress(30, 100)
+        assert dlg._bar.isVisibleTo(dlg)
+        assert dlg._bar.maximum() == 100 and dlg._bar.value() == 30
+
+        # A server that sends no length must not freeze the bar at 0%.
+        dlg.on_progress(5, 0)
+        assert dlg._bar.maximum() == 0, "unknown total is not shown as indeterminate"
+
+        dlg.on_error("the download did not match its checksum")
+        assert not dlg._bar.isVisibleTo(dlg), (
+            "the progress bar is still running after an error")
+        assert "checksum" in dlg._status.text()
+    finally:
+        dlg.deleteLater()

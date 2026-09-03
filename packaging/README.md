@@ -90,6 +90,21 @@ opening the PR:
   leaves the dead-man's-switch armed and the *next* real launch would
   otherwise ask the user to report a crash that never happened.
 
+  ✅ **And the upgrade path works, rehearsed between two published builds.**
+  Downloaded 2.3.2 as well (its hash matches its own manifest too), then
+  `tools/rehearse_swap.py --new 2.3.3 --old 2.3.2`: the old build installed,
+  the new build's `--apply-update` ran against it and exited 0 in 2.2s, the
+  target became 2.3.3, the previous copy was kept aside as `.old`, **and the
+  installed result passed its own self-test** — which is the part a hash check
+  cannot reach, because a byte-perfect copy Windows then refuses to execute
+  fails exactly this way.
+
+  This is the same gate `release.py` runs before publishing, but run the other
+  way round: normally it rehearses a build that has not shipped yet against the
+  last one that did. Here both ends are files a user could have downloaded, so
+  it exercises the upgrade an installed 2.3.2 actually performs rather than an
+  approximation of it.
+
 - ⚠ **There is no VirusTotal record for the shipped binary at all** — checked
   3 September, the hash returns "Item not found", meaning nobody has ever
   submitted it. Worth deciding deliberately rather than leaving to chance:
