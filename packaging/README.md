@@ -77,6 +77,19 @@ opening the PR:
   time the file people actually download has been checked, and PyInstaller's
   non-reproducibility means those are not the same file.
 
+  ✅ **And it opens a window.** `tools/probe_launch.py` against the same
+  downloaded file: bootloader pid launched, window found on its *child*
+  (1578x893, titled `Macronaut — 2.3.3`), tree killed, exit 0. `--selftest` is
+  headless, so it proves the bundled features work and cannot see the one
+  failure a first-time user actually meets — double-click, nothing appears.
+  The probe validated itself against a control window first, because a GUI
+  probe that silently finds nothing looks exactly like a broken GUI.
+
+  ⚠ It also cleaned up the three crash-session files its own kill created, and
+  `crashreport.pending()` is back to zero — checked, because a killed launch
+  leaves the dead-man's-switch armed and the *next* real launch would
+  otherwise ask the user to report a crash that never happened.
+
 - ⚠ **There is no VirusTotal record for the shipped binary at all** — checked
   3 September, the hash returns "Item not found", meaning nobody has ever
   submitted it. Worth deciding deliberately rather than leaving to chance:
