@@ -193,9 +193,24 @@ def sha256(path: Path) -> str:
 def write_manifest(ver: str, notes: str = "", mandatory: bool = False) -> Path:
     if not EXE.exists():
         raise SystemExit(f"error: {EXE} not found — build first")
+    # ⚠⚠ Fatal, not a warning, and this is the one place in the file where that
+    # distinction is unarguable. An installed build asks the URL baked into its
+    # own .exe, forever — UPDATE_REPO is effectively permanent the moment
+    # anything ships. Publishing with the placeholder in it produces binaries
+    # that point at a repository which does not exist and can never be told
+    # otherwise, because the only channel for telling them is the one that is
+    # broken. There is no recovery and no message you can send.
+    #
+    # It used to print a warning and write the manifest anyway. Eight release
+    # pages went out empty behind a warning in this same file, so the evidence
+    # that warnings are not a control is already in the repository.
     if "OWNER/" in _v.UPDATE_REPO:
-        print("  ⚠ version.UPDATE_REPO is still the placeholder — the published "
-              "manifest will point at a repo that doesn't exist.")
+        raise SystemExit(
+            "error: version.UPDATE_REPO is still the placeholder "
+            f"({_v.UPDATE_REPO!r}).\n"
+            "Every build published with it would ask a repository that does "
+            "not exist for its updates, permanently and unfixably. Set it to "
+            "the real owner/repo before releasing.")
     data = {
         "version": ver,
         "url": (f"https://github.com/{_v.UPDATE_REPO}/releases/download/"
@@ -265,8 +280,17 @@ def publish(ver: str, notes: str = "") -> None:
     # no source, so without these a buyer has no visible licence at all.
     legal = [p for p in (ROOT / "LICENSE", ROOT / "THIRD-PARTY-NOTICES.md")
              if p.exists()]
+    # Also fatal. Macronaut is GPL-3.0-or-later, and conveying the work means
+    # conveying the licence with it — that is §4, not a preference. The .exe
+    # bundles both files and `selftest._check_legal` proves it, so by the time
+    # a build reaches here they exist; a missing one means something is wrong
+    # upstream rather than that this release should go out lighter.
     if len(legal) < 2:
-        print("  ⚠ LICENSE / THIRD-PARTY-NOTICES.md missing — publishing without them")
+        raise SystemExit(
+            "error: LICENSE and/or THIRD-PARTY-NOTICES.md are missing from the "
+            "repository root, so the release would carry neither.\n"
+            "A GPL release has to convey its licence. Restore them before "
+            "publishing.")
 
     # ⚠ Fall back to the manifest's notes, not to the version number.
     #

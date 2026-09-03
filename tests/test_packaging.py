@@ -123,6 +123,46 @@ def test_the_readme_sends_a_searcher_to_the_download_before_the_small_print():
     assert "commit history starts on the day the project went open source" in readme
 
 
+def test_releasing_with_a_placeholder_update_repo_is_refused(monkeypatch):
+    """⚠⚠ The one mistake in this file with no recovery path at all.
+
+    An installed build asks the URL baked into its own `.exe` forever, so
+    `version.UPDATE_REPO` is permanent the moment anything ships. A release
+    published with the placeholder still in it produces binaries that ask a
+    repository which does not exist — and the only channel for correcting them
+    is the one that is broken. There is no message you can send afterwards.
+
+    It used to print a warning and write the manifest anyway. The evidence
+    that a warning is not a control was already in this repository: eight
+    release pages went out empty behind a warning in the same file, which is
+    what `test_release_notes_are_found_by_name_and_every_release_has_them`
+    exists for.
+
+    `publish()` refuses a missing LICENSE or THIRD-PARTY-NOTICES.md the same
+    way now — conveying a GPL work means conveying its licence — but that one
+    needs the whole release path to exercise, and the suite already pins those
+    files existing and being the real GPL.
+    """
+    import release
+    import version
+
+    # ⚠ Read the real value BEFORE patching. `release._v` *is* the `version`
+    # module — release.py does `import version as _v` — so patching one
+    # patches both, and asserting against `version.UPDATE_REPO` afterwards
+    # reads back the fake. That mistake was in the first draft of this test
+    # and it failed loudly, which is the only reason it is written down here.
+    real = version.UPDATE_REPO
+    assert "OWNER/" not in real, f"UPDATE_REPO is a placeholder: {real!r}"
+    assert real.count("/") == 1, real
+
+    monkeypatch.setattr(release._v, "UPDATE_REPO", "OWNER/REPO")
+    with pytest.raises(SystemExit) as e:
+        release.write_manifest("9.9.9")
+    assert "placeholder" in str(e.value).lower(), (
+        "write_manifest no longer refuses a placeholder UPDATE_REPO — a "
+        "release published with one can never be updated")
+
+
 def test_release_notes_are_found_by_name_and_every_release_has_them():
     """⚠ Eight of the first twenty-six releases went out with an empty page.
 
