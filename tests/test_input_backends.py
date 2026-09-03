@@ -11,6 +11,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import pytest
+
 from pynput.keyboard import Key, KeyCode, Controller as PynputController
 from pynput.mouse import Button, Controller as PynputMouse
 
@@ -917,3 +919,98 @@ def test_every_mouse_backend_offers_a_wheel():
     import sendinput_backend as sb
     for cls in (sb.ScancodeMouse, ic.InterceptionMouse):
         assert callable(getattr(cls, "scroll", None)), f"{cls.__name__} has no wheel"
+
+
+# ── absolute moves across more than one monitor ───────────────────────────────
+#
+# ⚠ Untested until 3 September 2026, and the failure it guards is one this
+# machine actually has: a second monitor to the LEFT of the primary, whose
+# pixels are at negative x. SendInput's absolute mode takes 0..65535 normalised
+# coordinates, and normalising those against the primary monitor instead of the
+# virtual desktop clamps every click onto the primary — the second monitor
+# becomes unreachable, silently, with the cursor landing somewhere plausible.
+
+def _fake_metrics(monkeypatch, x, y, w, h):
+    """Pretend the virtual desktop is (x, y, w, h)."""
+    import sendinput_backend as sb
+    table = {sb.SM_XVIRTUALSCREEN: x, sb.SM_YVIRTUALSCREEN: y,
+             sb.SM_CXVIRTUALSCREEN: w, sb.SM_CYVIRTUALSCREEN: h}
+    monkeypatch.setattr(sb.user32, "GetSystemMetrics",
+                        lambda which: table[which], raising=False)
+
+
+def test_absolute_coordinates_span_the_whole_virtual_desktop(monkeypatch):
+    """A single 1920x1080 monitor at the origin maps corner to corner."""
+    import sendinput_backend as sb
+    _fake_metrics(monkeypatch, 0, 0, 1920, 1080)
+
+    assert sb._to_absolute(0, 0) == (0, 0)
+    assert sb._to_absolute(1919, 1079) == (65535, 65535)
+    mid_x, mid_y = sb._to_absolute(960, 540)
+    assert abs(mid_x - 32767) <= 40 and abs(mid_y - 32767) <= 40
+
+
+def test_a_monitor_at_negative_x_is_reachable(monkeypatch):
+    """⚠ The bug this exists for.
+
+    Two 1920-wide monitors with the secondary on the LEFT: the virtual desktop
+    starts at x=-1920 and is 3840 wide. A point on that left monitor has a
+    negative x, and normalising against the *primary* would produce a negative
+    normalised value — which clamps to 0 at best and wraps in the 16-bit field
+    at worst. Either way the click lands on the wrong screen and nothing
+    reports an error.
+    """
+    import sendinput_backend as sb
+    _fake_metrics(monkeypatch, -1920, 0, 3840, 1080)
+
+    left_edge = sb._to_absolute(-1920, 0)
+    assert left_edge == (0, 0), (
+        f"the far edge of a left-hand monitor normalised to {left_edge}, not "
+        "the origin — it is being measured from the primary monitor")
+
+    # The seam between the two monitors sits at half of a 3840-wide desktop.
+    seam_x, _ = sb._to_absolute(0, 0)
+    assert abs(seam_x - 32767) <= 40, (
+        f"x=0 normalised to {seam_x}; on this desktop it is the midpoint, not "
+        "the left edge — the primary monitor is being used as the frame")
+
+    right_edge, _ = sb._to_absolute(1919, 0)
+    assert right_edge == 65535
+
+
+def test_an_off_screen_target_is_clamped_not_wrapped(monkeypatch):
+    """The normalised fields are 16-bit. A coordinate past the edge would wrap
+    to the opposite side of the desktop, which reads as the cursor teleporting
+    rather than as an out-of-range request."""
+    import sendinput_backend as sb
+    _fake_metrics(monkeypatch, 0, 0, 1920, 1080)
+
+    assert sb._to_absolute(-5000, -5000) == (0, 0)
+    assert sb._to_absolute(99999, 99999) == (65535, 65535)
+
+
+def test_a_degenerate_desktop_does_not_divide_by_zero(monkeypatch):
+    """GetSystemMetrics can answer 0 while a display is being reconfigured, and
+    the width appears in a denominator."""
+    import sendinput_backend as sb
+    _fake_metrics(monkeypatch, 0, 0, 0, 0)
+    assert sb._to_absolute(100, 100) == (0, 0)
+
+
+def test_the_input_struct_is_the_size_windows_expects(monkeypatch):
+    """⚠ Sized on the union's LARGEST member or SendInput rejects everything.
+
+    `cbSize` is passed as `sizeof(INPUT)`. If the union were sized on
+    KEYBDINPUT instead of MOUSEINPUT the struct comes out too small, and
+    SendInput answers 0 for every call — no error, no exception, no input. On
+    x64 the correct size is 40 bytes.
+    """
+    import ctypes, struct
+    import sendinput_backend as sb
+    if struct.calcsize("P") != 8:
+        pytest.skip("the 40-byte figure is the x64 layout")
+    assert ctypes.sizeof(sb.INPUT) == 40, (
+        f"sizeof(INPUT) is {ctypes.sizeof(sb.INPUT)}, not 40 — SendInput will "
+        "reject every call and report nothing")
+    assert ctypes.sizeof(sb._INPUTunion) == ctypes.sizeof(sb.MOUSEINPUT), (
+        "the union is not sized on MOUSEINPUT, its largest member")
