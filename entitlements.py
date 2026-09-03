@@ -19,7 +19,17 @@ have the other problem.
 not arbitrary:
 
 - **Seeing the screen** — Wait-for-Image, Wait-for-Text (OCR), Wait-for-Pixel.
-- **Reacting to what it sees** — If/Else, Loop, variables, Go to.
+- **Reacting to what it sees** — If/Else, Loop, Go to.
+
+⚠ **Variables are engine-only and must not be advertised.** `flow.N_SETVAR`,
+`flow.apply_set_var` and the `var` condition kind are all implemented and all
+run, but nothing in the UI can create either one: the palette is nine buttons
+and Set Var is not among them, and `flow_dialogs.ConditionWidget.TYPES` offers
+image / text / pixel / always. `PRO_NODE_TYPES` still lists the node so that an
+old saved flow containing one is priced correctly — that is the only reason.
+Three user-facing places said "variables" and no longer do (this file, the
+upgrade dialog, the pricing table). If Set Var comes back to the palette, they
+go back too; until then, selling it is selling something nobody can reach.
 
 Those are the same line, drawn twice. Everything free is *open-loop*: it
 happens on a timer whether or not it worked. Everything paid is *closed-loop*:

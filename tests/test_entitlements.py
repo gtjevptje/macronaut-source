@@ -4,6 +4,7 @@
 *consulted* — which is the other half, and the half that fails silently. A gate
 that never runs looks exactly like a gate nobody has tried to get past.
 """
+import ast
 import os
 import re
 import sys
@@ -729,6 +730,139 @@ def test_the_sitemap_is_advertised_from_the_domain_root():
            / "tools" / "build_site.py").read_text(encoding="utf-8")
     assert "publish_root" in src.split("def publish(", 1)[1], (
         "publish() no longer publishes the root site")
+
+
+def test_nothing_sells_a_node_type_the_palette_cannot_create():
+    """⚠ Variables are implemented, priced, and unreachable. Do not advertise them.
+
+    `flow.N_SETVAR`, `flow.apply_set_var` and the `var` condition kind are all
+    live in the engine and all run. But the palette in `main.py` is nine
+    buttons and Set Var is not one of them, and
+    `flow_dialogs.ConditionWidget.TYPES` offers image / text / pixel / always —
+    so a user cannot create a node that sets a variable, nor a condition that
+    reads one. The feature exists only for flows written by hand against
+    `flow.py`.
+
+    Three user-facing places said otherwise: this module's own docstring, the
+    pricing table on the site, and — worst — `licensing_ui`'s upgrade dialog,
+    which is the screen where somebody is asked for money. Selling a feature
+    nobody can reach is the kind of claim that is checkable by the person who
+    paid for it.
+
+    The test is written the general way round: *if* the palette gains Set Var,
+    it stops caring, so putting the feature back does not leave a stale
+    assertion behind to be deleted in confusion.
+    """
+    root = Path(__file__).resolve().parent.parent
+    main_src = (root / "main.py").read_text(encoding="utf-8")
+
+    # The palette block is the definitive list of what a user can add.
+    palette = main_src.split("for icon, label, emit, family in [", 1)
+    assert len(palette) == 2, "the palette block moved — this test cannot see it"
+    palette = palette[1].split("]", 1)[0]
+    set_var_is_creatable = "N_SETVAR" in palette or "set_var" in palette
+
+    if set_var_is_creatable:
+        return          # the feature is real; advertising it is fine
+
+    promises = {
+        "entitlements.py": (root / "entitlements.py"),
+        "licensing_ui.py": (root / "licensing_ui.py"),
+    }
+    site_tpl = root / "site" / "template.html"
+    if site_tpl.is_file():
+        promises["site/template.html"] = site_tpl
+
+    def displayable_strings(text):
+        """Every string literal that could reach a user, docstrings excluded.
+
+        ⚠ Parsed with `ast`, not grepped, and that is load-bearing. The
+        comment and the docstring explaining *why* this word is absent both
+        contain the word, so a textual scan finds the explanation and fails on
+        it — the same trap `test_flow`'s `monotonic` clock guard documents.
+        Comments and docstrings are never shown to anybody; string literals
+        can be.
+        """
+        tree = ast.parse(text)
+        docs = set()
+        for node in ast.walk(tree):
+            body = getattr(node, "body", None)
+            if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef,
+                                 ast.AsyncFunctionDef)) and body:
+                first = body[0]
+                if (isinstance(first, ast.Expr)
+                        and isinstance(first.value, ast.Constant)
+                        and isinstance(first.value.value, str)):
+                    docs.add(id(first.value))
+        out = []
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Constant) and id(node) not in docs
+                    and isinstance(node.value, str)
+                    and "variable" in node.value.lower()
+                    # A label for a node in somebody's old saved flow is not
+                    # a sale; `entitlements` still prices the type so that
+                    # such a flow is costed correctly.
+                    and node.value.strip().lower() != "set variable"):
+                out.append(" ".join(node.value.split())[:120])
+        return out
+
+    for name, path in promises.items():
+        text = path.read_text(encoding="utf-8")
+        if name.endswith(".py"):
+            found = displayable_strings(text)
+        else:
+            # The pricing table: only what a visitor reads as a bullet.
+            found = [" ".join(li.split()) for li
+                     in re.findall(r"<li>(.*?)</li>", text, re.S)
+                     if "variable" in li.lower()]
+        assert not found, (
+            f"{name} offers 'variables' but the palette cannot create a Set "
+            "Var node, so nobody can use one:\n    " + "\n    ".join(found))
+
+
+@needs_site
+def test_the_page_says_nothing_rather_than_publishing_a_wrong_checksum(monkeypatch):
+    """⚠ A checksum that does not match the download is worse than none.
+
+    The one visitor who bothers to check gets a mismatch, and a mismatch on an
+    unsigned binary reads as tampering rather than as a stale web page. So
+    every path that cannot establish the *published* digest has to render
+    nothing at all — not an empty code block, not the word "unavailable", and
+    above all not a hash taken from a local build.
+
+    That last one is the real trap. PyInstaller is not byte-reproducible, so
+    `dist/Macronaut.exe` rebuilt from an unchanged tree hashes differently from
+    the file people download, and `release.py` rewrites `dist/update.json` on
+    every build. Reading the digest from there would be correct until the next
+    local build and silently wrong afterwards.
+    """
+    bs = _build_site_module()
+
+    monkeypatch.setattr(bs, "released_sha256", lambda: ("", ""))
+    assert bs._sha256_block() == "", (
+        "the page renders a checksum element with no checksum in it")
+
+    digest = "a" * 64
+    monkeypatch.setattr(bs, "released_sha256", lambda: ("9.9.9", digest))
+    block = bs._sha256_block()
+    assert digest in block, "the digest is not in the block that announces it"
+    assert "9.9.9" in block, (
+        "the block does not say which release the digest belongs to — a hash "
+        "for an unnamed version cannot be checked against anything")
+    assert "Get-FileHash" in block, (
+        "no command to check it with; 'verify the checksum' that a reader "
+        "cannot act on is decoration")
+
+    # The template must tolerate the empty string without leaving a label
+    # stranded behind it.
+    monkeypatch.setattr(bs, "released_sha256", lambda: ("", ""))
+    page = (Path(__file__).resolve().parent.parent
+            / "site" / "template.html").read_text(encoding="utf-8")
+    assert "{{SHA256_BLOCK}}" in page, "the template no longer has the slot"
+    before = page.split("{{SHA256_BLOCK}}")[0]
+    assert not before.rstrip().endswith(("<p>", "<h2>", ":")), (
+        "the slot is preceded by a dangling label that would be left behind "
+        "when the block is empty")
 
 
 @needs_site

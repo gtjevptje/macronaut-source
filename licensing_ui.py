@@ -219,7 +219,14 @@ class UpgradeDialog(QDialog):
         what = _hint(
             "Pro adds the steps that let a flow watch the screen and decide "
             "what to do — Wait for image, Wait for text, Wait for pixel, "
-            "If / Else, Loop, variables and Go to — and removes the "
+            # ⚠ "variables" was in this list and is deliberately not any more.
+            # `flow.py` implements `set_var` and the `var` condition, but no
+            # part of the UI can create either: the palette is nine buttons and
+            # Set Var is not one, and ConditionWidget.TYPES is image / text /
+            # pixel / always. So this dialog — the screen where somebody is
+            # asked for money — was listing a feature they could not use.
+            # If Set Var ever comes back to the palette, put it back here.
+            "If / Else, Loop and Go to — and removes the "
             f"{entitlements.FREE_MAX_STEPS}-step limit.\n\n"
             "Everything you have built stays exactly as it is. Clicking, "
             "typing, dragging and scrolling are free and always will be.")
