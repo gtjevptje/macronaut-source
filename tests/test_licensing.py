@@ -462,3 +462,44 @@ def test_a_paid_key_actually_unlocks_the_thing_it_was_sold_for(
     assert ok_after, (
         "the licence activated but the flow it was bought for is still "
         f"refused ({why_after!r}); the money bought nothing")
+
+
+def test_a_failed_activation_does_not_downgrade_a_licensed_copy(
+        isolated_data_dir, key, pub, monkeypatch):
+    """⚠ A paying customer must not lose Pro because a write went wrong.
+
+    `activate` used to open the licence file with "w", which truncates before
+    writing. An interrupted write — a full disk, antivirus holding the handle,
+    the machine going down — left a customer silently back on the free tier at
+    no obvious moment.
+
+    It is recoverable: the key is in their e-mail and `fulfil.py --resend` can
+    reissue it from the ledger. But it happens to somebody who has already
+    paid, and the first they know is a flow refusing to run.
+    """
+    import json as _json
+
+    monkeypatch.setattr(licensing, "PUBLIC_KEY_HEX", pub)
+    licensing.refresh()
+
+    ok, _msg = licensing.activate(key)
+    assert ok, "the fixture key did not activate, so this test proves nothing"
+    licensing.refresh()
+    assert licensing.current().tier != "free"
+    stored = licensing._license_file().read_bytes()
+
+    # Now a second activation that dies mid-write.
+    monkeypatch.setattr(_json, "dump",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")))
+    ok2, msg2 = licensing.activate(key)
+    assert not ok2 and "couldn't be saved" in msg2, msg2
+
+    assert licensing._license_file().read_bytes() == stored, (
+        "a failed activation destroyed the licence that was already there")
+    licensing.refresh()
+    assert licensing.current().tier != "free", (
+        "a failed write dropped a paying customer back to the free tier")
+
+    leftovers = [p.name for p in licensing._license_file().parent.iterdir()
+                 if p.name.startswith(".lic-")]
+    assert not leftovers, f"temporary files left behind: {leftovers}"

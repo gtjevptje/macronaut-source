@@ -63,7 +63,9 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import re
+import tempfile
 from dataclasses import dataclass
 from datetime import date
 from typing import Optional, Tuple
@@ -315,9 +317,30 @@ def activate(text: str) -> Tuple[bool, str]:
     try:
         path = _license_file()
         path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump({"key": lic.key, "activated": date.today().isoformat()},
-                      f, indent=2)
+        # ⚠ Written beside the target and moved over it, for the same reason
+        # `FlowGraph.save` is — `open(path, "w")` truncates before writing, so
+        # an interrupted write leaves a paying customer's copy silently back on
+        # the free tier. Recoverable (the key is in their e-mail, and
+        # `fulfil.py --resend` can reissue it from the ledger) but the person it
+        # happens to has already paid, and it would happen at no obvious moment.
+        # Deliberately duplicated rather than shared: `licensing` sits below
+        # everything and importing another module to save nine lines would be a
+        # worse trade than the duplication.
+        fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".lic-",
+                                   suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump({"key": lic.key,
+                           "activated": date.today().isoformat()}, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, str(path))
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
     except Exception as exc:
         return False, f"The key is valid but couldn't be saved: {exc}"
     refresh()
