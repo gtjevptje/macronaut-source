@@ -270,3 +270,118 @@ def test_a_scroll_that_moved_nothing_records_nothing():
     r._t_last = 0.0
     r._on_scroll(0, 0, 0, 0)
     assert r._steps == []
+
+
+# ── mouse: click vs hold vs drag ──────────────────────────────────────────────
+#
+# ⚠ Drag promotion had no tests at all until 3 September 2026, while the scroll
+# merge beside it did. It is the newest of the three (15 August 2026) and the
+# one with a recorded past failure: a swipe used to be recorded as a *click at
+# the point the swipe started* — a step that presses and releases in one place
+# and therefore does nothing whatever to the control being dragged. Idle
+# Slayer's "Swipe to Start" pauses the game, so that silently stranded a
+# 25-minute run.
+
+from pynput.mouse import Button          # noqa: E402  (after the sys.path fix)
+
+
+def _press(rec, x, y, button=Button.left):
+    rec._on_click(x, y, button, True)
+
+
+def _release(rec, x, y, button=Button.left):
+    rec._on_click(x, y, button, False)
+
+
+def test_a_press_that_moved_is_recorded_as_a_drag(monkeypatch):
+    """The gesture is press → travel → release, and where it ended is the
+    whole point. `to_x`/`to_y` must be the release position."""
+    clock = {"t": 100.0}
+    rec = _make_recorder(monkeypatch, clock)
+
+    _press(rec, 500, 400)
+    clock["t"] += 0.5                       # a swipe takes time
+    _release(rec, 900, 405)
+
+    assert len(rec._steps) == 1
+    step = rec._steps[0]
+    assert step.kind == SeqStep.DRAG, (
+        "a press that travelled 400px was not promoted to a drag — it would "
+        "replay as a click at the point the swipe started")
+    assert (step.data["x"], step.data["y"]) == (500, 400)
+    assert (step.data["to_x"], step.data["to_y"]) == (900, 405)
+    # Recorded, not defaulted: the speed of a swipe is often the thing the
+    # receiver is measuring.
+    assert step.data["duration_ms"] == 500
+
+
+def test_a_press_that_did_not_move_stays_a_click(monkeypatch):
+    """Hand jitter is not a gesture. Movement within _DRAG_PX is still a click."""
+    clock = {"t": 100.0}
+    rec = _make_recorder(monkeypatch, clock)
+
+    jitter = SequenceRecorder._DRAG_PX - 1
+    _press(rec, 500, 400)
+    clock["t"] += 0.05
+    _release(rec, 500 + jitter, 400 + jitter)
+
+    assert rec._steps[0].kind == SeqStep.CLICK
+    assert "to_x" not in rec._steps[0].data
+
+
+def test_a_drag_beats_a_hold_even_though_it_was_also_held(monkeypatch):
+    """⚠ The precedence, and the reason the code checks drag *first*.
+
+    A swipe is nearly always held past `_HOLD_S` as well, so both promotions
+    match. If the hold test ran first, every drag in the app would be recorded
+    as a press-and-hold in one place — which is the original bug wearing a
+    different hat, and it would look correct in the step list.
+    """
+    clock = {"t": 100.0}
+    rec = _make_recorder(monkeypatch, clock)
+
+    _press(rec, 100, 100)
+    clock["t"] += SequenceRecorder._HOLD_S * 3     # comfortably a "hold" too
+    _release(rec, 600, 100)
+
+    step = rec._steps[0]
+    assert step.kind == SeqStep.DRAG, (
+        "a slow swipe was recorded as a hold — drag must be checked before "
+        "hold, because a drag is nearly always held as well")
+    assert not step.data.get("hold")
+
+
+def test_a_press_held_in_one_place_is_a_hold(monkeypatch):
+    """The other half of that precedence: no movement, so hold still wins."""
+    clock = {"t": 100.0}
+    rec = _make_recorder(monkeypatch, clock)
+
+    _press(rec, 300, 300)
+    clock["t"] += SequenceRecorder._HOLD_S * 2
+    _release(rec, 300, 300)
+
+    step = rec._steps[0]
+    assert step.kind == SeqStep.CLICK
+    assert step.data.get("hold") is True
+    assert step.data["hold_ms"] >= SequenceRecorder._HOLD_S * 1000
+
+
+def test_a_double_click_is_not_turned_into_a_drag(monkeypatch):
+    """A merged double-click carries clicks=2, and the drag promotion
+    deliberately refuses those — dragging is a single-press gesture."""
+    clock = {"t": 100.0}
+    rec = _make_recorder(monkeypatch, clock)
+
+    _press(rec, 200, 200)
+    clock["t"] += 0.02
+    _release(rec, 200, 200)
+    clock["t"] += 0.05                      # inside _DBLCLICK_S
+    _press(rec, 201, 200)
+    clock["t"] += 0.4
+    _release(rec, 700, 200)                 # far enough to look like a drag
+
+    assert len(rec._steps) == 1
+    step = rec._steps[0]
+    assert step.data.get("clicks") == 2
+    assert step.kind == SeqStep.CLICK, (
+        "a double-click whose second release drifted was promoted to a drag")
