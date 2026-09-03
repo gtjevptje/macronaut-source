@@ -795,7 +795,22 @@ class FlowGraph:
         if not isinstance(payload, dict):
             raise ValueError(
                 f"“{os.path.basename(path)}” does not contain a flow.")
-        return cls.from_dict(payload)
+        try:
+            return cls.from_dict(payload)
+        except (TypeError, KeyError, ValueError, AttributeError) as exc:
+            # ⚠ The other way a flow breaks, and the one this project invites:
+            # the website tells people their macros are "plain JSON you can
+            # read, edit, copy and delete yourself". Someone who takes that up
+            # and mistypes a key used to get `KeyError: 'type'` in a message
+            # box — which names nothing, suggests nothing, and does not say the
+            # file is theirs to fix.
+            detail = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
+            raise ValueError(
+                f"“{os.path.basename(path)}” is valid JSON but is not shaped "
+                f"like a flow ({detail}). If you have edited it by hand, that "
+                "is where to look — a node needs an \"id\" and a \"type\", and "
+                "an edge needs \"src\" and \"dst\". Nothing has been changed."
+            ) from exc
 
     # ── v1 → v2 migration (backward compatibility) ─────────────────────
     @classmethod

@@ -2094,3 +2094,55 @@ def test_a_damaged_flow_says_so_in_words_a_person_can_act_on(tmp_path):
     ok = tmp_path / "fine.json"
     good.save(str(ok))
     assert len(flow.FlowGraph.load(str(ok)).nodes) == len(good.nodes)
+
+
+def test_a_hand_edited_flow_that_is_wrong_says_where_to_look(tmp_path):
+    """⚠ The website invites this, so the app has to answer it kindly.
+
+    The privacy page and the FAQ both tell people their macros are "plain JSON
+    you can read, edit, copy and delete yourself", and that is a real selling
+    point against a format you cannot open. Somebody who takes it up and
+    mistypes a key used to get `KeyError: 'type'` in a message box — which
+    names nothing, suggests nothing, and does not say the file is theirs to
+    fix.
+
+    Separate from the truncation case above: that file is broken JSON, this
+    one parses perfectly and simply is not a flow. They need different
+    sentences because they have different causes and different fixes.
+    """
+    import json as _json
+    import flow
+
+    broken = {
+        "nodes is not a list":  {"version": 2, "nodes": "oops", "edges": []},
+        "node has no type":     {"version": 2, "nodes": [{"id": "n1"}], "edges": []},
+        "edge has no dst":      {"version": 2, "nodes": [],
+                                 "edges": [{"id": "e1", "src": "n1"}]},
+        "a coordinate is text": {"version": 2,
+                                 "nodes": [{"id": "n1", "type": "action",
+                                            "x": "left"}], "edges": []},
+    }
+    for label, payload in broken.items():
+        p = tmp_path / "hand edited.json"
+        p.write_text(_json.dumps(payload), encoding="utf-8")
+        with pytest.raises(ValueError) as e:
+            flow.FlowGraph.load(str(p))
+        msg = str(e.value)
+        assert "hand edited.json" in msg, f"{label}: file not named"
+        assert "edited it by hand" in msg, f"{label}: no hint where to look"
+        assert "Nothing has been changed" in msg, f"{label}: no reassurance"
+        # The real cause survives, for anyone who can use it.
+        assert any(k in msg for k in ("KeyError", "TypeError", "ValueError")), (
+            f"{label}: the underlying cause was swallowed")
+
+    # ⚠ And a flow that is merely *unfamiliar* still loads. An unknown node
+    # type and a version from the future are forward compatibility, not
+    # corruption — refusing them would make every older Macronaut reject a file
+    # a newer one wrote.
+    for payload in ({"version": 99, "nodes": [{"id": "n1", "type": "action"}],
+                     "edges": []},
+                    {"version": 2, "nodes": [{"id": "n1", "type": "teleport"}],
+                     "edges": []}):
+        p = tmp_path / "future.json"
+        p.write_text(_json.dumps(payload), encoding="utf-8")
+        assert flow.FlowGraph.load(str(p)).nodes, "a forward-compatible flow was refused"
