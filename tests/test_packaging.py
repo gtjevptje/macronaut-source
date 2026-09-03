@@ -71,6 +71,54 @@ def test_the_source_link_in_the_app_points_at_a_real_repo():
     assert "github.com" in _read("README.md")
 
 
+def test_the_readme_sends_a_searcher_to_the_download_before_the_small_print():
+    """⚠ This README is a landing page whether it was written as one or not.
+
+    Measured 3 September 2026: searching **"Macronaut auto clicker"** puts
+    `github.com/gtjevptje/macronaut-source` first on Bing, and the website does
+    not appear on page one at all — github.com carries authority the Pages
+    subdomain does not. So the person who went looking for an auto clicker
+    arrives *here*, not at the site built to convert them.
+
+    It failed them twice. There was no link to the website anywhere in the
+    file, so the one page search engines actually rank passed nothing on to the
+    six pages that need the traffic; and the first thing under the tagline was
+    three paragraphs on PyInstaller determinism and commit history — correct,
+    hard-won, and written for a reviewer rather than for someone who wants to
+    click something.
+
+    Nothing was cut to fix it; the small print moved below the features, where
+    the developer half of the file starts. This pins the ordering, because the
+    failure is invisible: the README renders perfectly either way.
+    """
+    readme = _read("README.md")
+
+    site = "https://gtjevptje.github.io/Macronaut/"
+    assert site in readme, (
+        "the README no longer links to the website — this is the page search "
+        "engines rank, and it is the site's largest single source of authority")
+
+    exe = ("https://github.com/gtjevptje/Macronaut/releases/latest/download/"
+           "Macronaut.exe")
+    assert exe in readme, "the README no longer offers the download"
+
+    # Above the fold: both must precede the features, and the small print must
+    # follow them. A reader deciding whether to download should not have to
+    # scroll past a note about archive determinism to find the button.
+    small_print = readme.index("## About this repository")
+    features = readme.index("## Features")
+    assert readme.index(exe) < features, "the download is buried below Features"
+    assert readme.index(site) < features, "the website link is below Features"
+    assert small_print > features, (
+        "the build-reproducibility and history notes are back above the "
+        "features, where they meet a product searcher first")
+
+    # The honest parts must survive the reordering — each is referenced from
+    # the SignPath application as something this project states up front.
+    assert "will not be the *same file*" in readme
+    assert "commit history starts on the day the project went open source" in readme
+
+
 def test_third_party_notices_record_the_lgpl_election():
     text = _read("THIRD-PARTY-NOTICES.md")
     assert "mouseinfo" in text

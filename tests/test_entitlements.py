@@ -732,6 +732,40 @@ def test_the_sitemap_is_advertised_from_the_domain_root():
 
 
 @needs_site
+def test_the_domain_root_serves_a_sitemap_too():
+    """⚠ Search Console resolves a submitted sitemap path against the PROPERTY.
+
+    The ownership file is published to both the domain root and the
+    `/Macronaut/` prefix on purpose (see the test below), which means either
+    can be the verified property. In a root property, submitting "sitemap.xml"
+    means `https://gtjevptje.github.io/sitemap.xml` — and that was a 404, while
+    the real sitemap sat one directory down. Google reports that as "Sitemap
+    could not be read", which reads like a problem with the XML and sends you
+    to validate a file that was correct all along. It happened on
+    3 September 2026.
+
+    An index rather than a second copy of the URLs: two sitemaps listing the
+    same pages is a thing to keep in sync, and an index cannot drift because it
+    names no page at all.
+    """
+    bs = _build_site_module()
+    xml = bs.sitemap_index()
+
+    assert "<sitemapindex" in xml, "the root sitemap is not an index"
+    assert f"<loc>{bs.SITE_URL}sitemap.xml</loc>" in xml, (
+        "the root sitemap does not point at the real one")
+    # It must list no pages of its own — that is the whole point of an index.
+    assert "<url>" not in xml
+
+    src = (Path(__file__).resolve().parent.parent
+           / "tools" / "build_site.py").read_text(encoding="utf-8")
+    root_fn = src.split("def publish_root(", 1)[1].split("\ndef ", 1)[0]
+    assert "sitemap_index()" in root_fn, (
+        "publish_root no longer writes a sitemap to the domain root, so a root "
+        "Search Console property cannot find one")
+
+
+@needs_site
 def test_ownership_files_are_published_to_both_locations():
     """⚠ Google re-checks its verification file and SILENTLY unverifies the
     property when it stops resolving — taking the Search Console data with it,

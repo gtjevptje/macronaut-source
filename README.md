@@ -16,32 +16,28 @@ A modern dark **indigo** theme (with an instant light mode), the Windows system
 typeface, consistent controls throughout, plain-language descriptions on the
 advanced features, and a layout that adapts from a small window to fullscreen.
 
-## About this repository
+## Download
 
-This is the complete source of Macronaut, published under the GPL. Everything
-that goes into the released `.exe` is here, and `pyinstaller macronaut.spec`
-builds it.
+### → **[Macronaut.exe](https://github.com/gtjevptje/Macronaut/releases/latest/download/Macronaut.exe)**
 
-⚠ It will not be the *same file*. PyInstaller writes a timestamp into the
-executable and does not order its archive deterministically, so two builds from
-this same tree, on this same machine, minutes apart, differ in tens of millions
-of bytes and a few kilobytes of length. That is PyInstaller, not something
-hidden here — but it means a hash comparison against the published download will
-never match, and you should not read that as evidence of anything. What is
-checkable is the source, all of which is in this repository.
+Windows 10 or 11. One file, no installer, no account, nothing to configure — run
+it and it works. **[macronaut's website](https://gtjevptje.github.io/Macronaut/)**
+has screenshots, the full feature list and a published SHA-256 of that download,
+plus a [click speed test](https://gtjevptje.github.io/Macronaut/click-speed-test.html)
+and how it compares to
+[AutoHotkey](https://gtjevptje.github.io/Macronaut/autohotkey-alternative.html)
+and [TinyTask](https://gtjevptje.github.io/Macronaut/tinytask-alternative.html).
 
-The commit history starts on the day the project went open source rather than
-on the day it began. The private working repository also holds the business
-around the program — outreach drafts, traffic numbers, pricing plans — none of
-which is part of Macronaut, and rewriting three years of history to strip it was
-a worse risk than simply starting here. Nothing about the *program* is withheld.
+⚠ **Windows will warn you the first time.** A blue "Windows protected your PC"
+box appears — click **More info** → **Run anyway**. That warning is not about
+anything found in the file; it is what Windows shows for any executable without
+a paid code-signing certificate, which this project does not have yet. Being
+able to read the source instead is the honest answer to it, and that is what
+this repository is. Your antivirus may flag it for the same reason, plus one
+more: it installs a global keyboard hook, because a stop hotkey that only works
+when the window is focused would be useless.
 
-Issues and pull requests are welcome. It is a one-person project, so replies
-are not instant. [CONTRIBUTING.md](CONTRIBUTING.md) covers getting set up,
-running the suite, and the three traps that have actually caught people.
-Security bugs go to email rather than the issue tracker —
-[SECURITY.md](SECURITY.md) says what is in scope and, just as usefully, what is
-not.
+To run from source instead, see [Installation](#installation) below.
 
 ---
 
@@ -99,6 +95,35 @@ not.
 - Per-session history (start, end, duration, clicks, keys, averages),
   **saved between runs** in `~/.macronaut/sessions.json`
 - Export session history to CSV
+
+---
+
+## About this repository
+
+This is the complete source of Macronaut, published under the GPL. Everything
+that goes into the released `.exe` is here, and `pyinstaller macronaut.spec`
+builds it.
+
+⚠ It will not be the *same file*. PyInstaller writes a timestamp into the
+executable and does not order its archive deterministically, so two builds from
+this same tree, on this same machine, minutes apart, differ in tens of millions
+of bytes and a few kilobytes of length. That is PyInstaller, not something
+hidden here — but it means a hash comparison against the published download will
+never match, and you should not read that as evidence of anything. What is
+checkable is the source, all of which is in this repository.
+
+The commit history starts on the day the project went open source rather than
+on the day it began. The private working repository also holds the business
+around the program — outreach drafts, traffic numbers, pricing plans — none of
+which is part of Macronaut, and rewriting three years of history to strip it was
+a worse risk than simply starting here. Nothing about the *program* is withheld.
+
+Issues and pull requests are welcome. It is a one-person project, so replies
+are not instant. [CONTRIBUTING.md](CONTRIBUTING.md) covers getting set up,
+running the suite, and the three traps that have actually caught people.
+Security bugs go to email rather than the issue tracker —
+[SECURITY.md](SECURITY.md) says what is in scope and, just as usefully, what is
+not.
 
 ---
 
