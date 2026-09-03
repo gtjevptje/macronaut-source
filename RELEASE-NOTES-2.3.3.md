@@ -18,7 +18,7 @@ Windows tells you about it is that it protected your PC from it.
 Every answer this page could previously give to that was a request for trust:
 the SHA-256, "one person made this", the promise of no telemetry. Publishing the
 code is the only answer that asks for none. You can read exactly what it does
-with your keyboard, and you can build this same `.exe` yourself:
+with your keyboard, and you can build it yourself:
 
 ```
 git clone https://github.com/gtjevptje/macronaut-source
@@ -26,6 +26,15 @@ cd macronaut-source
 pip install -r requirements.txt
 pyinstaller macronaut.spec
 ```
+
+**Corrected 3 September 2026.** This note originally said you could build
+"this same `.exe`". That is not true and it should not have been claimed here
+of all places. PyInstaller stamps a timestamp into its output and does not
+order its archive deterministically, so two builds from the same tree on the
+same machine differ — a hash comparison against the published download will
+never match. That is PyInstaller, not something hidden in the source. What is
+checkable is the source, all of which is published, and the SHA-256 of the
+download, which is now on the website under the download button.
 
 ## What is in this build
 

@@ -732,6 +732,54 @@ def test_the_sitemap_is_advertised_from_the_domain_root():
         "publish() no longer publishes the root site")
 
 
+@needs_site
+def test_nothing_claims_the_build_is_byte_identical():
+    """⚠ This claim has now been wrong twice, in two separate correction passes.
+
+    PyInstaller stamps a timestamp into its output and does not order its
+    CArchive deterministically, so two builds of an unchanged tree — same
+    machine, minutes apart — differ. Measured 31 August 2026: 3,346 bytes of
+    length and tens of millions of bytes of content. The site, both READMEs
+    and the release notes were corrected that day.
+
+    The FAQ was missed, because it does not live in a template — it is the
+    `FAQ` list in `build_site.py`, and the correction pass grepped `site/`.
+    So the page went on saying you could "build the exact .exe this page
+    offers" for three more days, **twice on every render**: once in the
+    visible answer and once inside the JSON-LD `FAQPage` block, which is the
+    copy Google can lift into a rich result. A false claim about build
+    integrity is the worst kind this project can make — it is the whole
+    argument for publishing the source, and the SignPath application
+    volunteers the correction as evidence of how mistakes get handled here.
+
+    Checks the generated pages rather than the sources, so it cannot be
+    dodged by a claim arriving through a route nobody thought to grep.
+    """
+    bs = _build_site_module()
+    site = Path(__file__).resolve().parent.parent / "site"
+
+    # Phrasings that assert byte-identity. "reproducible build" is included
+    # because it is the term of art for exactly the property absent here.
+    forbidden = ("exact .exe", "exact exe", "byte-for-byte", "bit-for-bit",
+                 "reproducible build", "identical binary", "same binary",
+                 "verify the hash matches", "hash will match")
+
+    checked = 0
+    for _src, name, _prio, _freq in bs.PAGES:
+        built = site / name
+        if not built.is_file():
+            continue                      # not rendered in this checkout
+        checked += 1
+        low = built.read_text(encoding="utf-8").lower()
+        for phrase in forbidden:
+            assert phrase not in low, (
+                f"{name} claims a byte-identical build ({phrase!r}). "
+                "PyInstaller is not reproducible; say the source is complete "
+                "and that the hash will not match.")
+    if not checked:
+        pytest.skip("no pages are built in this checkout")
+
+
 def test_nothing_sells_a_node_type_the_palette_cannot_create():
     """⚠ Variables are implemented, priced, and unreachable. Do not advertise them.
 
