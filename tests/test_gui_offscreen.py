@@ -4881,3 +4881,47 @@ def test_clearing_the_session_history_asks_first(window, main_mod, monkeypatch):
     assert not stats.sessions, "Yes did not clear the history"
     assert tab._table.rowCount() == 0, (
         "the table still shows rows for sessions that no longer exist")
+
+
+def test_a_failed_save_tells_the_user_nothing_was_lost(window, main_mod,
+                                                       monkeypatch, tmp_path):
+    """⚠ The reassurance is the point, and it is the part most likely to be
+    trimmed later as wordy.
+
+    Since `FlowGraph.save` became atomic, a failed save genuinely leaves any
+    previous version of the file untouched — and leaves the flow on the canvas
+    open either way. Somebody staring at a save error over an afternoon's work
+    needs to be told that, not handed an OSError. The message also has to say
+    something actionable, because "Permission denied" alone leaves them with
+    nowhere to go.
+    """
+    import flow
+    tab = window._sequence_tab
+    tab._graph = tab._new_graph()
+    tab._graph.add_node(flow.N_ACTION,
+                        {"step": {"kind": "wait", "data": {"ms": 1}}})
+
+    target = tmp_path / "afternoon.json"
+    target.write_text('{"version": 2, "nodes": []}', encoding="utf-8")
+    before = target.read_bytes()
+
+    monkeypatch.setattr(main_mod.QFileDialog, "getSaveFileName",
+                        staticmethod(lambda *a, **k: (str(target), "")))
+    monkeypatch.setattr(flow.FlowGraph, "save",
+                        lambda self, p: (_ for _ in ()).throw(
+                            OSError("Permission denied")))
+
+    shown = []
+    monkeypatch.setattr(main_mod.QMessageBox, "critical",
+                        lambda parent, title, text, *a, **k: shown.append(text))
+    tab._save()
+
+    assert shown, "a failed save said nothing at all"
+    msg = shown[0]
+    assert "afternoon.json" in msg, "the message does not name the file"
+    assert "Permission denied" in msg, "the actual cause was swallowed"
+    assert "has not been changed" in msg, (
+        "the message does not say the file already on disk survived, which is "
+        "the one thing the user needs to know")
+    assert target.read_bytes() == before, "the existing file was damaged"
+    assert flow.has_work(tab._graph), "the flow was lost from the canvas"

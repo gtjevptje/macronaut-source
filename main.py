@@ -4176,7 +4176,24 @@ class SequenceTab(QWidget):
                 # measurements; until then it shares the unsaved one.
                 self._set_stats_key(Path(path).stem)
             except Exception as e:
-                QMessageBox.critical(self, "Save Error", str(e))
+                # ⚠ Say that nothing was lost, because since 4 September 2026
+                # that is true and it is the only thing the person in front of
+                # this box actually needs. `FlowGraph.save` writes beside the
+                # target and moves it over, so a failure leaves any previous
+                # version of the file exactly as it was — and leaves the flow
+                # on the canvas untouched either way, which is the copy that
+                # matters most.
+                existed = Path(path).exists()
+                QMessageBox.critical(
+                    self, "Save Error",
+                    f"Couldn't save to {Path(path).name}.\n\n{e}\n\n"
+                    + ("The version already on disk has not been changed, and "
+                       "your flow is still open here — try somewhere else, or "
+                       "close whatever else is using the file."
+                       if existed else
+                       "Your flow is still open here and nothing has been "
+                       "lost. Try a different folder — this one may be "
+                       "read-only or full."))
 
     # There is no _load here on purpose. It opened a file picker and replaced
     # the graph — which is exactly what the Library's Open does, from a list
