@@ -4925,3 +4925,33 @@ def test_a_failed_save_tells_the_user_nothing_was_lost(window, main_mod,
         "the one thing the user needs to know")
     assert target.read_bytes() == before, "the existing file was damaged"
     assert flow.has_work(tab._graph), "the flow was lost from the canvas"
+
+
+def test_a_damaged_flow_is_still_listed_and_labelled(library, main_mod):
+    """⚠ The worst outcome for a damaged file is that it disappears.
+
+    `save` was not atomic until 4 September 2026, so a half-written flow is a
+    file some users already have. Whatever the Library does with one, it must
+    not quietly drop it from the list: the user would conclude their flow had
+    been deleted, when it is sitting right there and is the only copy.
+
+    `_meta_for` catches and returns "unreadable", so the row stays and says so.
+    Pinned because `FlowGraph.load` got stricter the same day — it now raises
+    on a payload that is not a flow, where it used to fail further in — and a
+    stricter read path is exactly the kind of change that can turn "listed with
+    a warning" into "not listed at all".
+    """
+    dlg, scripts, _root = library
+    broken = scripts / "half written.json"
+    broken.write_text('{\n  "version": 2,\n  "nodes": [\n', encoding="utf-8")
+    dlg._refresh()
+    names = [dlg._list.item(i).text() for i in range(dlg._list.count())]
+    assert any("half written" in n for n in names), (
+        f"the damaged flow vanished from the library: {names}")
+
+    meta = dlg._meta_for(broken)
+    assert meta == "unreadable", meta
+
+    # The good ones are unaffected.
+    assert any("alpha" in n for n in names)
+    assert "step" in dlg._meta_for(scripts / "alpha.json")
