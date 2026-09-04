@@ -842,3 +842,47 @@ def test_no_new_public_code_becomes_unreachable():
         "these are listed as unreferenced but are not:\n"
         + "\n".join(f"  {h}: {n}" for h, n in stale)
         + "\nRemove them from KNOWN_UNREFERENCED.")
+
+
+def test_no_setting_exists_that_nothing_reads():
+    """⚠ A knob that does nothing is the worst kind of dead code.
+
+    Eight settings were removed on 4 September 2026 — residue from the pre-2.0
+    Basic tab that nothing had read since. They were harmless in themselves,
+    but they were written into every user's `settings.json`, so somebody
+    reading their own file found `use_image_trigger` and went looking for a
+    feature that does not exist.
+
+    The allowlist here is deliberately **empty**. Every one of the remaining
+    fields is read somewhere, so any new one that is not is a setting somebody
+    added and never wired up — which is the same defect as `--mandatory`
+    writing a flag no client acts on, and as `ocr.warmup` returning True having
+    done nothing. All three were found by hand this week; this is so the next
+    one is not.
+
+    Counts a string reference too, because `settings.set("name", …)` and
+    `getattr` are both real ways to reach one.
+    """
+    import ast
+    import collections
+    import dataclasses
+    import settings as _settings
+
+    names = [f.name for f in dataclasses.fields(_settings.AppSettings)]
+    reads = collections.Counter()
+    for path in (sorted(glob.glob(os.path.join(ROOT, "*.py")))
+                 + sorted(glob.glob(os.path.join(ROOT, "tools", "*.py")))):
+        with open(path, encoding="utf-8") as fh:
+            src = fh.read()
+        for node in ast.walk(ast.parse(src)):
+            if isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load):
+                reads[node.attr] += 1
+        for name in names:
+            reads[name] += len(re.findall(r'["\']%s["\']' % re.escape(name), src))
+
+    unread = sorted(n for n in names if reads[n] == 0)
+    assert not unread, (
+        "settings nothing in the app ever reads:\n"
+        + "\n".join(f"  {n}" for n in unread)
+        + "\nEither wire it up or remove it. Removing is safe — `_load` ignores "
+          "an unknown key — but renaming is not.")
