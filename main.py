@@ -3827,10 +3827,18 @@ class SequenceTab(QWidget):
         if self._thread is not None and self._thread.isRunning():
             return True
         # A retired run can still be executing: stop_playback() waits only 1.5 s
-        # and a detection step (OCR, matcher.find, _grab) is not interruptible,
-        # so _on_playback_done() clears the references while the worker is still
-        # on the CPU. Reporting "not playing" there let Play start a *second*
-        # worker alongside the first.
+        # and _on_playback_done() clears the references while the worker may
+        # still be on the CPU. Reporting "not playing" there let Play start a
+        # *second* worker alongside the first.
+        #
+        # ⚠ The original reason was that "a detection step (OCR, matcher.find,
+        # _grab) is not interruptible". `matcher.find` is, as of 4 September
+        # 2026 — it takes a `should_continue` and asks between template scales,
+        # which is what made Stop responsive during a Detect. That was the long
+        # one, at a second or two. OCR (~33 ms cold, ~4 ms warm) and a screen
+        # grab are still indivisible and still short. So this net catches a
+        # narrower case than it used to, and is kept because "narrower" is not
+        # "none" — a worker can also be mid-click or mid-sleep.
         return any(t is not None and t.isRunning() for t, _w in self._retired)
 
     @property
@@ -3968,9 +3976,12 @@ class SequenceTab(QWidget):
         t = self._thread
         if t is not None and t.isRunning():
             t.quit()
-            # A short courtesy wait, and nothing hangs on it: a detection step
-            # (OCR, an image match, a screen grab) is not interruptible, so the
-            # thread can still be inside one whatever deadline we pick. This
+            # A short courtesy wait, and nothing hangs on it: the thread can
+            # still be inside something indivisible whatever deadline we pick.
+            # ⚠ Image matching used to be the worst of those at a second or
+            # two; it takes a stop callback now. What is left is short — an OCR
+            # read, a screen grab, one click — so this wait succeeds far more
+            # often than it did, and must still not be relied on. This
             # used to wait 3 s and then drop the reference regardless — and
             # destroying a *running* QThread is a Qt abort, not an exception,
             # which is why Stop could take the whole app with it.
