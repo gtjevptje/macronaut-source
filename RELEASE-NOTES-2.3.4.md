@@ -28,6 +28,17 @@ bug. The file is still there; open it in Notepad and you will usually find it
 ends mid-word. Nothing in this release can repair one, but nothing after this
 release should create one.
 
+**And if you have edited a flow by hand, the app now tells you where to look.**
+Macronaut's flows are plain JSON on purpose — you are meant to be able to open
+one — but a mistyped key used to come back as `KeyError: 'type'`, which is not
+help of any kind. It now says which file, that it is valid JSON but not shaped
+like a flow, and that a node needs an `id` and a `type` while an edge needs
+`src` and `dst`.
+
+A flow saved by a *newer* Macronaut than the one you are running still opens.
+That is deliberate: refusing it would be a worse problem than the one being
+solved here.
+
 ## Also
 
 - Nothing else changed about how flows run, record or play back.
