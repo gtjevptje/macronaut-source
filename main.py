@@ -5342,6 +5342,11 @@ class MainWindow(QMainWindow):
         # for the network, and it asks nothing of someone who has never crashed.
         crash_ui.schedule(self, self._settings)
 
+        # Where you left off: the script that was open when the app closed.
+        # Synchronous, and before the recovery offer below, so that accepting
+        # an unsaved flow still has the last word on what is on the canvas.
+        self._restore_last_script()
+
         # Unsaved work from a session that closed or crashed with a flow on the
         # canvas. First of the three startup questions on purpose: it is about
         # something the user made and might be missing right now, whereas an
@@ -5773,12 +5778,69 @@ class MainWindow(QMainWindow):
             names = []
         self._compact.set_scripts(names, cur)
 
+    def _restore_last_script(self):
+        """Reopen the script that was open when the app last closed.
+
+        ⚠ Until 4 September 2026 `last_sequence_path` was written by three code
+        paths and read by none — it was the Save dialog's default folder and
+        nothing else. So somebody who picked a script in Basic, used it, and
+        quit was back at "— no script —" the next morning, every morning, on
+        the app's single commonest journey.
+
+        This is the cheap third of the three answers to the canvas-loss problem
+        (`recovery.py` is the other, and the real one). It restores the last
+        *saved* file, so on its own it never recovers unsaved work — which is
+        exactly why it was not the answer, and why it is still worth having.
+
+        **Blast radius is deliberately small.** The setting is empty until you
+        either save a flow or pick one in Basic, so anyone who has only ever
+        used the plain auto-clicker sees no change at all; the people this
+        affects are the ones who chose a script, which is the population it is
+        for.
+
+        Ordering matters: this runs during construction, and the recovery offer
+        fires later from the event loop, so accepting an unsaved flow still
+        wins. And a recovery copy that *equals* this file is never offered, so
+        the two cannot fight over the canvas.
+        """
+        try:
+            raw = (self._settings.s.last_sequence_path or "").strip()
+            if not raw:
+                return
+            path = Path(raw)
+            if not path.is_file():
+                return          # deleted, renamed, or on a drive not mounted
+            g = flow.FlowGraph.load(str(path))
+        except Exception:
+            # ⚠ Silent, and it must stay silent. A damaged or unreachable last
+            # script is not a reason to put a dialog in front of somebody who
+            # has not asked for anything yet — they get the empty canvas the
+            # app has always opened on, which is a working app.
+            return
+        try:
+            self._sequence_tab._graph = g
+            self._sequence_tab._canvas.set_graph(g)
+            self._sequence_tab._set_stats_key(path.stem)
+            if path.parent == scripts_dir():
+                # Keep the Basic face's dropdown honest about what is loaded.
+                # `set_scripts` blocks signals, so this cannot re-enter
+                # `_on_script_selected`.
+                names = sorted(p.stem for p in scripts_dir().glob("*.json"))
+                self._compact.set_scripts(names, path.stem)
+            self._compact.set_basic_shaped(self._is_basic_shaped())
+        except Exception:
+            pass
+
     def _on_script_selected(self, name: str):
         if not name or name.startswith("—"):
             # "— no script —" returns the Basic face to a fresh clicker.
             self._sequence_tab._graph = self._sequence_tab._new_graph()
             self._sequence_tab._canvas.set_graph(self._sequence_tab._graph)
             self._compact.set_basic_shaped(True)
+            # ⚠ And forget it, or `_restore_last_script` hands the script back
+            # on the next launch — turning "no script" into a setting that only
+            # holds until you close the window.
+            self._settings.set("last_sequence_path", "")
             return
         path = scripts_dir() / f"{name}.json"
         if not path.exists():

@@ -15,6 +15,12 @@ already saved on disk, so opening something from the Library, looking at it and
 quitting asks you nothing. And it is not a replacement for saving — it holds one
 flow, the last one you had open.
 
+**And Macronaut reopens the script you had open.** If you pick a script and
+quit, it is there again when you come back, instead of dropping you at "— no
+script —" every morning. Choosing "— no script —" is remembered too, so it does
+not undo itself overnight. If you have only ever used the plain auto-clicker,
+nothing changes for you: there is no script to remember.
+
 **Saving is atomic now, and this is the other half of the same problem.** Until this
 version, saving opened your file and emptied it *before* writing anything back.
 If the write did not finish — a full disk, antivirus holding the file open, the

@@ -1,4 +1,4 @@
-"""Unsaved-work recovery.
+"""Unsaved-work recovery, and reopening where you left off.
 
 ⚠ **The bug these exist for.** Until 4 September 2026, closing Macronaut threw
 away whatever was on the canvas — no prompt, no autosave, no restore. Half an
@@ -373,6 +373,174 @@ def test_nothing_is_asked_when_there_is_nothing_to_recover(window, monkeypatch):
     window._offer_recovery()
     assert asked == []
     assert recovery.read() is None, "a payload not worth offering is not kept"
+
+
+# ── where you left off ───────────────────────────────────────────────────────
+#
+# `_restore_last_script` is the cheap third answer to the same problem: it
+# reopens the last *saved* script, so on its own it recovers nothing unsaved.
+# It is here rather than in test_gui_offscreen because the two features share a
+# canvas and the interesting cases are the ones where they disagree.
+
+
+@pytest.fixture
+def fresh_window(qapp):
+    """A MainWindow built *after* the test has arranged settings on disk.
+
+    ⚠ `_restore_last_script` runs during construction, so the `window` fixture
+    above is useless for it — by the time a test can set `last_sequence_path`
+    the window has already decided what to open. Every test here therefore
+    builds its own, and hands back the constructor so the settings can be
+    written first.
+    """
+    import main
+    built = []
+
+    def build():
+        w = main.MainWindow()
+        built.append(w)
+        return w
+
+    yield build
+    for w in built:
+        try:
+            w._shutdown()
+        except Exception:
+            pass
+        w.hide()
+
+
+def _remember(path) -> None:
+    """Write `last_sequence_path` the way the app does, then flush it."""
+    from settings import SettingsManager
+    sm = SettingsManager()
+    sm.set("last_sequence_path", str(path))
+    sm.save()
+
+
+def test_the_script_you_had_open_is_open_again_next_launch(fresh_window,
+                                                           tmp_path):
+    """⚠ The setting was written by three code paths and read by none.
+
+    Someone who picked a script in Basic, used it, and quit came back to
+    "— no script —" the next morning, and the morning after that.
+    """
+    path = tmp_path / "my clicker.json"
+    g = _worked_graph("the one I was using")
+    g.save(str(path))
+    _remember(path)
+
+    w = fresh_window()
+    texts = [n.data.get("text") for n in w._sequence_tab._graph.nodes.values()
+             if n.type == flow.N_ACTION]
+    assert texts == ["the one I was using"]
+
+
+def test_the_basic_dropdown_agrees_with_what_is_loaded(fresh_window):
+    """A restored canvas the Basic face still calls "— no script —" is worse
+    than not restoring it: the two disagree, and one of them is lying."""
+    import settings as _settings
+    path = _settings.scripts_dir() / "chosen.json"
+    _worked_graph("chosen").save(str(path))
+    _remember(path)
+
+    w = fresh_window()
+    assert w._compact.current_script() == "chosen"
+
+
+def test_someone_who_never_chose_a_script_sees_no_change(fresh_window):
+    """The blast radius. `last_sequence_path` is empty until you save a flow or
+    pick one, so the plain auto-clicker user must open on the same empty canvas
+    the app has always given them."""
+    _remember("")
+    w = fresh_window()
+    assert not flow.has_work(w._sequence_tab._graph)
+    assert w._compact.current_script() == ""
+
+
+@pytest.mark.parametrize("damage,label", [
+    (None, "the file was deleted"),
+    ("{", "the file is truncated"),
+    ('{"nodes": "nonsense"}', "valid JSON, not a flow"),
+])
+def test_an_unopenable_last_script_is_not_allowed_to_block_startup(
+        fresh_window, tmp_path, damage, label):
+    """⚠ Silent on purpose. A dialog here greets somebody who has not asked for
+    anything yet, on a launch where the app is otherwise perfectly usable."""
+    path = tmp_path / "broken.json"
+    if damage is not None:
+        path.write_text(damage, encoding="utf-8")
+    _remember(path)
+
+    w = fresh_window()                    # must not raise
+    assert not flow.has_work(w._sequence_tab._graph), label
+
+
+def test_choosing_no_script_is_remembered_too(window):
+    """Otherwise "— no script —" is a setting that only holds until you close
+    the window, and the script you just dismissed is back in the morning."""
+    import settings as _settings
+    path = _settings.scripts_dir() / "dismiss me.json"
+    _worked_graph("dismiss me").save(str(path))
+
+    window._on_script_selected("dismiss me")
+    assert window._settings.s.last_sequence_path
+
+    window._on_script_selected("— no script —")
+    assert window._settings.s.last_sequence_path == ""
+    assert not flow.has_work(window._sequence_tab._graph)
+
+
+def test_unsaved_work_outranks_the_script_you_had_open(fresh_window, tmp_path,
+                                                       monkeypatch):
+    """⚠ The two features share one canvas, so the order they run in is the
+    whole design. `_restore_last_script` runs during construction and the
+    recovery offer fires later from the event loop, which means the flow the
+    user said "yes, that one" to has the last word — as it must, since it is
+    the copy that is not on disk anywhere else."""
+    import main
+
+    saved = tmp_path / "on disk.json"
+    _worked_graph("the saved one").save(str(saved))
+    _remember(saved)
+    recovery.write(_worked_graph("the unsaved one"), "")
+
+    monkeypatch.setattr(main.QMessageBox, "question",
+                        staticmethod(lambda *a, **kw: main.QMessageBox.Yes))
+    w = fresh_window()
+    assert flow.has_work(w._sequence_tab._graph), "construction restores the saved one"
+    w._offer_recovery()                   # what singleShot(0) fires
+
+    texts = [n.data.get("text") for n in w._sequence_tab._graph.nodes.values()
+             if n.type == flow.N_ACTION]
+    assert texts == ["the unsaved one"]
+
+
+def test_reopening_the_same_script_untouched_asks_nothing(fresh_window,
+                                                          tmp_path, monkeypatch):
+    """The two features agreeing, which is the common case: quit with a saved
+    script open, and the next launch restores it and says nothing at all."""
+    import main
+
+    saved = tmp_path / "steady.json"
+    g = _worked_graph("steady")
+    g.save(str(saved))
+    _remember(saved)
+
+    w = fresh_window()
+    # ⚠ Asserted before the interesting part, or this test passes for the wrong
+    # reason: with nothing restored the canvas is empty, an empty canvas is
+    # never offered back, and "asked nothing" becomes true of a broken app.
+    assert flow.has_work(w._sequence_tab._graph)
+    w._save_state()                       # close
+
+    asked = []
+    monkeypatch.setattr(main.QMessageBox, "question",
+                        staticmethod(lambda *a, **kw: asked.append(1)
+                                     or main.QMessageBox.No))
+    w2 = fresh_window()                   # next launch
+    w2._offer_recovery()
+    assert asked == [], "restoring a script must not also offer to recover it"
 
 
 def test_a_damaged_payload_is_dropped_rather_than_asked_about_forever(window,
