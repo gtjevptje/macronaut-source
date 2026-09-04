@@ -1,6 +1,8 @@
 """Application settings management — persisted as JSON in the user's home directory."""
 import json
+import os
 import shutil
+import tempfile
 from pathlib import Path
 from dataclasses import dataclass, asdict, field, fields
 from typing import Dict, List, get_args, get_origin
@@ -374,11 +376,41 @@ class SettingsManager:
             pass  # corrupted file → fall back to defaults
 
     def save(self):
+        """Write settings.json, never truncating the copy already there.
+
+        ⚠ This was left as a plain `open(..., "w")` on 4 September 2026 on the
+        reasoning that settings are regenerable and `_load` falls back to
+        defaults on a corrupt file. That reasoning was wrong, and measuring the
+        failure is what showed it: opening for write **truncates first**, so a
+        destination locked by antivirus, a sync client or an open editor is
+        emptied to zero bytes and *then* raises. `_load` finds an empty file,
+        returns every default, and says nothing — so the user silently loses
+        every launcher-key binding, their input backend and their theme, with
+        no error anywhere. The tolerant load does not protect them; it hides it.
+
+        ⚠ Deliberately **no fsync**, unlike `flow.FlowGraph.save`. This runs on
+        every settings change and on every close, and the guarantee worth
+        having here is "the previous file survives a failed write", which the
+        rename gives on its own. Durability against power loss is the flow's
+        problem, not this one's.
+
+        Failures stay silent, as before. A modal on a settings write is noise,
+        and by the time this matters the app is usually closing.
+        """
         try:
             SETTINGS_DIR.mkdir(parents=True, exist_ok=True)
-
-            with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
-                json.dump(asdict(self.s), f, indent=2)
+            fd, tmp = tempfile.mkstemp(dir=str(SETTINGS_DIR), prefix=".settings-",
+                                       suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(asdict(self.s), f, indent=2)
+                os.replace(tmp, str(SETTINGS_FILE))
+            except BaseException:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+                raise
         except Exception:
             pass
 

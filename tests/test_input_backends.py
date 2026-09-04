@@ -1117,3 +1117,49 @@ def test_an_old_settings_file_still_loads_after_a_field_is_removed(tmp_path,
     # And the keys that survive are unaffected by the ones that did not.
     assert s.seq_speed == 3.0
     assert s.always_on_top is True
+
+
+def test_a_locked_settings_file_is_not_emptied(tmp_path, monkeypatch):
+    """⚠ This is the case that changed my mind about leaving settings alone.
+
+    `settings.save` was kept as a plain write on the reasoning that settings
+    are regenerable and `_load` falls back to defaults on a corrupt file. That
+    reasoning was wrong: opening for write **truncates first**, so a
+    destination locked by antivirus, a sync client or an open editor is emptied
+    to zero bytes and *then* raises — and `save` swallows the exception. The
+    next launch finds an empty file, takes every default, and says nothing.
+
+    So the user silently loses every launcher-key binding, their input backend
+    and their theme. The tolerant load does not protect them from that; it is
+    what makes it silent.
+    """
+    import json
+    import msvcrt
+    import settings as st
+
+    monkeypatch.setattr(st, "SETTINGS_DIR", tmp_path)
+    monkeypatch.setattr(st, "SETTINGS_FILE", tmp_path / "settings.json")
+
+    sm = st.SettingsManager()
+    sm.s.script_hotkeys = {"f13": "beta", "f14": "gamma"}
+    sm.s.input_backend = "sendinput"
+    sm.save()
+    original = st.SETTINGS_FILE.read_bytes()
+    assert b"f13" in original, "nothing was saved, so this test proves nothing"
+
+    holder = open(st.SETTINGS_FILE, "r+b")
+    msvcrt.locking(holder.fileno(), msvcrt.LK_NBLCK, 1)
+    try:
+        sm.s.input_backend = "interception"
+        sm.save()          # swallows the failure, by design
+    finally:
+        msvcrt.locking(holder.fileno(), msvcrt.LK_UNLCK, 1)
+        holder.close()
+
+    assert st.SETTINGS_FILE.read_bytes() == original, (
+        "a locked settings file was emptied — every binding the user set is "
+        "gone and nothing said so")
+    back = json.loads(st.SETTINGS_FILE.read_text(encoding="utf-8"))
+    assert back["script_hotkeys"] == {"f13": "beta", "f14": "gamma"}
+    assert not [p for p in tmp_path.iterdir()
+                if p.name.startswith(".settings-")], "a temporary was left behind"
