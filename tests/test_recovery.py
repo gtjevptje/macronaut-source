@@ -278,23 +278,40 @@ def test_the_autosave_timer_is_running_so_a_crash_is_survivable(window):
     assert recovery.offerable(recovery.read()) is not None
 
 
-def test_an_idle_canvas_does_not_rewrite_the_file_every_tick(window):
+def test_an_idle_canvas_does_not_rewrite_the_file_every_tick(window, monkeypatch):
     """The write is skipped when the serialised graph has not changed, which
     while nobody is editing is every tick. Asserted because "autosave every
-    twenty seconds forever" is otherwise a real cost on a laptop battery."""
+    twenty seconds forever" is otherwise a real cost on a laptop battery.
+
+    ⚠ This counts calls rather than watching the file's mtime, and the first
+    version did the latter and was flaky. Windows stamps file times from the
+    same coarse 15.625 ms system clock that `clicker._sleep` was caught pacing
+    on, so two writes inside one tick share an mtime exactly — the test then
+    reports "it skipped the write" about a write that plainly happened. One run
+    in eight failed. Counting is what the assertion was always about anyway.
+    """
     tab = window._sequence_tab
+    writes = []
+    real = recovery.write
+    monkeypatch.setattr(recovery, "write",
+                        lambda *a, **k: (writes.append(1), real(*a, **k))[1])
+
     tab._graph = _worked_graph("steady")
     tab._write_recovery()
-    first = recovery.RECOVERY_FILE.stat().st_mtime_ns
+    assert len(writes) == 1
 
     tab._write_recovery()
     tab._write_recovery()
-    assert recovery.RECOVERY_FILE.stat().st_mtime_ns == first
+    assert len(writes) == 1, "an unchanged canvas was written out again"
 
-    # ...but an edit is picked up, and the close path writes regardless.
+    # ...but an edit is picked up.
     tab._graph.add_node(flow.N_ACTION, {"kind": "type", "text": "more"}, x=90, y=0)
     tab._write_recovery()
-    assert recovery.RECOVERY_FILE.stat().st_mtime_ns != first
+    assert len(writes) == 2, "an edited canvas was not written out"
+
+    # ...and the close path writes regardless of whether anything changed.
+    tab._write_recovery(force=True)
+    assert len(writes) == 3, "the forced close-path write was skipped"
 
 
 def test_saving_the_flow_retires_the_recovery_copy(window, tmp_path, monkeypatch):

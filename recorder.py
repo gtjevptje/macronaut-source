@@ -530,9 +530,20 @@ class PlaybackWorker(QObject):
             return False
 
     def _sleep(self, secs: float):
-        deadline = time.monotonic() + secs
-        while self._running and time.monotonic() < deadline:
-            time.sleep(min(0.01, deadline - time.monotonic()))
+        """⚰ Dead with the rest of PlaybackWorker, but corrected anyway.
+
+        It carried the same coarse-clock bug as `clicker._sleep` — see the long
+        note there. Left as it was, it is a working example of the mistake
+        sitting in the file most likely to be copied from when someone adds a
+        pacing loop. Fixing two lines of code that never runs is cheaper than
+        the next instance of the bug.
+        """
+        deadline = time.perf_counter() + max(0.0, secs)
+        while self._running:
+            remaining = deadline - time.perf_counter()
+            if remaining <= 0:
+                break
+            time.sleep(min(0.01, remaining))
 
     def _click_physical(self, phys_x, phys_y, screenshot, btn_str="left", clicks=1):
         """

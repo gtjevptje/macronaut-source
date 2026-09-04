@@ -162,9 +162,37 @@ class ClickWorker(QObject):
             self._mouse.release(btn)
 
     def _sleep(self, secs: float):
-        deadline = time.monotonic() + secs
-        while self._running and time.monotonic() < deadline:
-            time.sleep(min(0.01, deadline - time.monotonic()))
+        """Interruptible sleep — Stop cuts it short within ~10 ms.
+
+        ⚠ **perf_counter, not monotonic.** On Windows `time.monotonic()` is
+        GetTickCount64 and its resolution is 15.625 ms, so every deadline here
+        quantised up to the next tick. `time.sleep` was never the problem — it
+        is accurate to well under a millisecond on this machine. Measured on
+        4 September 2026, before and after, as the gap between consecutive
+        clicks with the mouse stubbed out:
+
+            interval   promised    was        now
+              50 ms     20 /s     16.0 /s    20.0 /s
+              10 ms    100 /s     91.7 /s    98.6 /s
+            Max speed   ~200 /s   61.5 /s   181.7 /s
+
+        Every "was" figure is an exact multiple of 15.625 ms, which is what
+        gave it away: 5 ms and 10 ms waits both took 16.00 ms, a 50 ms wait
+        took 62.50, a 200 ms wait took 203.00.
+
+        ⚠ `flow_exec.Executor.sleep` was fixed for this **and its comment even
+        predicts the number above** — "it caps click rate at ~64 CPS however
+        low the interval goes". The fix was never carried across to the Basic
+        clicker, which is the app's most-used path and the one the published
+        interval table on the website describes. If you find another loop that
+        paces something in milliseconds, check its clock.
+        """
+        deadline = time.perf_counter() + max(0.0, secs)
+        while self._running:
+            remaining = deadline - time.perf_counter()
+            if remaining <= 0:
+                break
+            time.sleep(min(0.01, remaining))
 
     # ── Main loop ─────────────────────────────────────────────────────
     @Slot()

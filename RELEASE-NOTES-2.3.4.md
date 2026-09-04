@@ -70,6 +70,18 @@ A flow saved by a *newer* Macronaut than the one you are running still opens.
 That is deliberate: refusing it would be a worse problem than the one being
 solved here.
 
+**The click interval is now the interval you asked for.** Every wait shorter
+than about a fifth of a second was being rounded up to the next 15.6 ms tick of
+a Windows timer, so the clicker ran slower than it said it did — and the shorter
+the interval, the worse it got. Set 50 ms and you got about 16 clicks a second
+instead of 20. **Max speed** was the worst affected: it was held at roughly 61
+clicks a second no matter what you did, and now runs at about 180.
+
+Nothing changed about how clicks are sent; the loop was simply reading a clock
+that only updates 64 times a second to time things measured in milliseconds.
+Longer intervals — a second, half a second — were always accurate and are
+unchanged.
+
 **Watching the screen is about fifteen times faster when it finds something.**
 A Detect step, or an If / Else asking whether something is on screen, used to
 take around two seconds on a 1080p screen and four on an ultrawide — *even when
