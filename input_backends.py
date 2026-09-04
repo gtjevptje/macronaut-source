@@ -1,10 +1,19 @@
 """Selectable input-send backends: pynput (default), SendInput scancodes,
 Interception driver — for both the keyboard and the mouse.
 
-Macronaut's engines (clicker.py, flow_exec.py, recorder.py) send keys through a
-pynput `keyboard.Controller` (`self._kb`) and clicks through a pynput
-`mouse.Controller` (`self._mouse`). Games differ in what injected input they
-accept:
+`flow_exec.py` is the engine that sends input, and it goes through a pynput
+`keyboard.Controller` (`self._kb`) and a pynput `mouse.Controller`
+(`self._mouse`) obtained from `make_keyboard()` / `make_mouse()` here.
+
+⚠ This line named "clicker.py, flow_exec.py, recorder.py" as the three engines
+until 4 September 2026, and two of those were wrong. `clicker.py` is dead and
+does not import this module at all — its own banner says so, and that it talks
+to pynput directly, "cannot reach a game that ignores message-queue input", and
+so is unusable for the main reason anyone installs this. `recorder.py` calls
+`make_mouse()`/`make_keyboard()` only inside `PlaybackWorker`, which is also
+dead; the live recorder records and does not send.
+
+Games differ in what injected input they accept:
 
 - "pynput"       — virtual-key codes via the message queue. Fine for normal apps,
                    ignored by many games.

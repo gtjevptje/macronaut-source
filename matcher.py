@@ -1,8 +1,20 @@
 """
 Unified on-screen image matching for Macronaut.
 
-Both the Basic clicker (clicker.py) and the Sequence engine (recorder.py) use
-this single module so matching behaves identically everywhere.
+One module, so matching behaves identically everywhere it is asked for.
+
+⚠ This said "Both the Basic clicker (clicker.py) and the Sequence engine
+(recorder.py) use this single module" until 4 September 2026. Both named
+modules are dead — `clicker.py` and `recorder.PlaybackWorker` were replaced by
+the flow engine and never removed. The live callers are:
+
+  * `flow_exec` — the autoclick image gate, the Wait-for-image step, and the
+    Detect/If-Else sensor. This is everything that runs during an automation.
+  * `main` — the Test-match preview in the image-step editor.
+  * `selftest` — the "image match" check in the frozen binary.
+
+Verified by grep rather than assumed, because trusting the previous version of
+this sentence is exactly what cost a session elsewhere in this repo.
 
 Key improvement over plain pyautogui.locate():
   * MULTI-SCALE matching — the template is searched at a range of sizes, so an
