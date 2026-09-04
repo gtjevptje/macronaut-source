@@ -5,11 +5,13 @@ engine; the 2.0 rewrite replaced it with the `autoclick` node, and the live
 implementation is `flow_exec.FlowWorker._do_autoclick`, which was ported from
 `ClickWorker.run()` below and is where a fix actually belongs.
 
-⚠ That name was `FlowInterpreter._run_autoclick` here until 4 September 2026 and
-matched nothing — a signpost pointing at a symbol that does not exist. It cost a
-session: a real 15.625 ms clock bug was found in the code *below* and fixed and
-reported as a shipped-app fix, because grep lands you in the middle of a file
-and this banner never got read. If you are editing anything here, stop.
+⚠ That pointer read `flow_exec.FlowInterpreter._run_autoclick` until 4 September
+2026, which is wrong in the way that is hardest to notice: `FlowInterpreter` is
+real, but it lives in `flow.py`, and `_run_autoclick` does not exist anywhere.
+A name you half-recognise reads as verified. It cost a session — a real 15.625 ms
+clock bug was found in the code *below*, fixed, benchmarked and reported as a
+shipped-app improvement, because grep lands you in the middle of a file and this
+banner was never read. If you are editing anything here, stop.
 
 It is still in the tree for two reasons and neither is that it works. The mount
 this project is developed on refuses deletes, and the published source is a
@@ -186,7 +188,7 @@ class ClickWorker(QObject):
         gave it away: 5 ms and 10 ms waits both took 16.00 ms, a 50 ms wait
         took 62.50, a 200 ms wait took 203.00.
 
-        ⚠ `flow_exec.Executor.sleep` was fixed for this **and its comment even
+        ⚠ `flow_exec.FlowWorker.sleep` was fixed for this **and its comment even
         predicts the number above** — "it caps click rate at ~64 CPS however
         low the interval goes". The fix was never carried across to the Basic
         clicker, which is the app's most-used path and the one the published
