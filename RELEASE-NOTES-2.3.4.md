@@ -19,6 +19,12 @@ it was.
 **Activating a licence is written the same way**, for the same reason. An
 interrupted write there used to leave a paid copy quietly back on the free tier.
 
+**And so is settings.json**, which is the one most people would actually have
+noticed. If that file was locked while Macronaut saved it — antivirus scanning,
+a sync client, an editor left open — it was emptied, and the next launch quietly
+started from defaults: every launcher key you had bound, your input backend and
+your theme, gone with no message. It keeps what was there now.
+
 **Errors about your files now say what happened.** A flow that will not open
 used to report `Expecting value: line 1 column 20 (char 19)`, which tells you
 neither what is wrong nor that the problem is the file rather than the program.
