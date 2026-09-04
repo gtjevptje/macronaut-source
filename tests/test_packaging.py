@@ -886,3 +886,56 @@ def test_no_setting_exists_that_nothing_reads():
         + "\n".join(f"  {n}" for n in unread)
         + "\nEither wire it up or remove it. Removing is safe — `_load` ignores "
           "an unknown key — but renaming is not.")
+
+
+def test_both_quit_paths_disarm_the_crash_reporter_and_save_state():
+    """⚠ Read with `ast`, because these two functions cannot be *called*.
+
+    `closeEvent` and `_quit_app` both end in `os._exit(0)` — deliberately, so
+    no orphaned Macronaut keeps a global hotkey hook. Invoking either from a
+    test would end the pytest run silently with status 0, which is why this
+    suite's own rule is never to `close()` a MainWindow. So the only way to
+    check what they do is to read them.
+
+    Three calls have to be in both, and each is a wiring that nothing else
+    protects:
+
+    * `crashreport.disarm()` — the dead-man's switch is armed for the whole
+      session and a clean exit is recorded here **or never**, because
+      `os._exit` runs no `atexit`. Miss it and every ordinary shutdown is
+      reported as a crash on the next launch: the user is asked to send a
+      report for something that did not happen, and the real crash rate
+      becomes unreadable.
+    * `_shutdown()` — which is what reaches `flow_exec.release_all_held()`,
+      so a key or a mouse button held by a running flow does not outlive the
+      app.
+    * `_save_state()` — the window geometry, the settings and the face.
+
+    ⚠ Parsed rather than grepped, for the reason `test_flow`'s clock guard is:
+    the comments around these lines name the very calls being looked for, so a
+    textual search passes on the explanation after the code is gone.
+    """
+    import ast
+
+    with open(os.path.join(ROOT, "main.py"), encoding="utf-8") as fh:
+        tree = ast.parse(fh.read())
+
+    wanted = {"crashreport.disarm", "self._shutdown", "self._save_state"}
+    seen = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name in ("closeEvent",
+                                                               "_quit_app"):
+            seen[node.name] = {ast.unparse(n.func) for n in ast.walk(node)
+                               if isinstance(n, ast.Call)}
+
+    assert set(seen) == {"closeEvent", "_quit_app"}, (
+        f"a quit path is missing from main.py: found {sorted(seen)}")
+    for name, calls in seen.items():
+        missing = sorted(wanted - calls)
+        assert not missing, f"{name} no longer calls: {', '.join(missing)}"
+        # If a quit path ever stops ending the process, this test is measuring
+        # something else and should be revisited rather than trusted.
+        assert "_os._exit" in calls, (
+            f"{name} no longer ends the process; the reasoning above assumed "
+            "it does, and the whole point of disarming here was that "
+            "os._exit runs no atexit")
