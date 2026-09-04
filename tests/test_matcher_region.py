@@ -170,3 +170,127 @@ def test_the_template_is_still_found_at_a_different_size(haystack):
     assert abs(m.left - tx) <= 3 and abs(m.top - ty) <= 3, (
         f"found at {(m.left, m.top)}, planted at {(tx, ty)}")
     assert m.score > 0.8
+
+
+# ── Interruptibility ─────────────────────────────────────────────────────────
+#
+# A full-screen multi-scale search is ~2 s of uninterruptible C. `main.
+# SequenceTab.is_playing` documents what that costs: stop_playback() waits
+# 1.5 s, the worker is still on the CPU when that expires, so the run has to be
+# *retired* and tracked separately to stop Play launching a second worker
+# beside the first. `should_continue` addresses the cause — the scale loop asks
+# between templates, so Stop lands within one matchTemplate.
+
+def test_a_search_can_be_abandoned_part_way(haystack):
+    """The callback is consulted, and an abandoned search reports nothing."""
+    shot, tpl, _ = haystack
+    calls = []
+
+    def stop_after_one():
+        calls.append(1)
+        return len(calls) <= 1
+
+    m = matcher.best_match(tpl, screenshot=shot, should_continue=stop_after_one)
+    assert m is None, "an abandoned search must not report a match"
+    assert len(calls) >= 2, "should_continue was never polled"
+
+
+def test_abandoning_reports_not_found_rather_than_a_partial_best(haystack):
+    """⚠ The safe reading, and not a detail: `_do_wait_image` *clicks* what it
+    is handed. A partial best returned on Stop would be a click nobody asked
+    for, at coordinates chosen by a half-finished search."""
+    shot, tpl, _ = haystack
+    assert matcher.find(tpl, confidence=0.5, screenshot=shot,
+                        should_continue=lambda: False) is None
+    assert matcher.present(tpl, confidence=0.5, screenshot=shot,
+                           should_continue=lambda: False) is False
+
+
+def test_a_callback_that_never_stops_changes_nothing(haystack):
+    """The guard has to be free when nobody is stopping — this is on the hot
+    path of every Detect step."""
+    shot, tpl, (tx, ty) = haystack
+    plain = matcher.best_match(tpl, screenshot=shot)
+    guarded = matcher.best_match(tpl, screenshot=shot,
+                                 should_continue=lambda: True)
+    assert plain == guarded
+    assert guarded is not None and (guarded.left, guarded.top) == (tx, ty)
+
+
+def test_stopping_between_the_colour_and_grey_passes_is_noticed(haystack):
+    """⚠ The gap the first draft left open. A pass that is abandoned returns
+    None, which is exactly what "not on screen" looks like — so without a check
+    *between* the passes, stopping during the colour search would send the grey
+    search off on another full sweep."""
+    from PIL import Image
+    import tempfile, os as _os
+
+    shot, _, _ = haystack
+    stranger = Image.new("RGB", (20, 16), (10, 200, 90))
+    for x in range(0, 20, 4):
+        stranger.putpixel((x, x % 16), (250, 0, 250))
+    fd, path = tempfile.mkstemp(suffix=".png")
+    _os.close(fd)
+    stranger.save(path)
+
+    seen = []
+    real = matcher._best_match_cv2
+
+    def counting(hay, needle, scales, grayscale, should_continue=None):
+        seen.append(grayscale)
+        return real(hay, needle, scales, grayscale, should_continue)
+
+    import pytest as _pytest
+    mp = _pytest.MonkeyPatch()
+    mp.setattr(matcher, "_best_match_cv2", counting)
+    try:
+        # Runs the whole colour pass, then reports stopped.
+        state = {"n": 0}
+
+        def stop_after_colour():
+            state["n"] += 1
+            return state["n"] <= len(matcher.DEFAULT_SCALES)
+
+        m = matcher.best_match(path, screenshot=shot,
+                               should_continue=stop_after_colour)
+    finally:
+        mp.undo()
+        _os.unlink(path)
+
+    assert m is None
+    assert seen == [False], (
+        f"passes run: {seen} — the grey pass started after the search had "
+        "already been abandoned")
+
+
+def test_the_running_flow_actually_passes_the_stop_callback():
+    """⚠ Wiring, read with `ast`. The mechanism above is worthless if the three
+    live call sites do not opt in, and they would still pass every test here.
+
+    Every `matcher.find` / `matcher.present` call in `flow_exec` runs inside a
+    flow, which is precisely where Stop has to work. The UI's preview and the
+    self-test are not flows and correctly leave it off.
+    """
+    import ast
+    import os
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(root, "flow_exec.py"), encoding="utf-8") as fh:
+        tree = ast.parse(fh.read())
+
+    missing = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        f = node.func
+        if not (isinstance(f, ast.Attribute)
+                and isinstance(f.value, ast.Name) and f.value.id == "matcher"
+                and f.attr in ("find", "present", "best_match")):
+            continue
+        if not any(k.arg == "should_continue" for k in node.keywords):
+            missing.append(f"flow_exec.py:{node.lineno}  matcher.{f.attr}(...)")
+
+    assert not missing, (
+        "these searches cannot be interrupted, so Stop waits out a full "
+        "multi-scale search:\n  " + "\n  ".join(missing)
+        + "\nPass should_continue=self.running.")

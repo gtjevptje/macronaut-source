@@ -599,7 +599,9 @@ class FlowWorker(QObject):
         if not (_HAS_MATCHER and matcher.ENABLED):
             return True
         try:
-            return matcher.present(image_path, confidence)
+            # should_continue: Stop must not have to wait out a ~2 s search.
+            return matcher.present(image_path, confidence,
+                                   should_continue=self.running)
         except Exception:
             return False
 
@@ -855,7 +857,8 @@ class FlowWorker(QObject):
                                if (region_logical and _HAS_OCR) else None)
                 if _HAS_MATCHER and matcher.ENABLED:
                     box = matcher.find(image_path, confidence, screenshot=shot,
-                                       region=region_phys)
+                                       region=region_phys,
+                                       should_continue=self.running)
                 else:
                     needle = Image.open(image_path).convert("RGB")
                     sub, dx, dy = (shot, 0, 0)
@@ -962,7 +965,8 @@ class FlowWorker(QObject):
                 if _HAS_MATCHER and matcher.ENABLED:
                     found = matcher.find(cond.get("image_path", ""),
                                          cond.get("confidence", 0.8),
-                                         screenshot=shot) is not None
+                                         screenshot=shot,
+                                         should_continue=self.running) is not None
                 else:
                     from PIL import Image
                     needle = Image.open(cond.get("image_path", "")).convert("RGB")

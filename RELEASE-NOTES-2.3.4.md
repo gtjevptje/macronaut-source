@@ -80,6 +80,12 @@ that near-perfect: the same answer in the same place, in about a seventh of a
 second. Deciding that something is **not** there still does the full search,
 because that is the case all those extra passes are for.
 
+**Stop now stops during a Detect step.** Searching the whole screen for an
+image takes a second or two, and until now that was one indivisible operation:
+press Stop while a Detect or a Wait-for-image step was mid-search and nothing
+happened until it finished. The search now checks between template sizes, so
+Stop is acted on in about a tenth of a second.
+
 **A step that watches for an image now says when the image is missing.** If you
 move or delete a picture a Detect step was looking for, that step used to wait
 out its whole timeout and report "not found" — exactly what it reports when the
@@ -89,21 +95,23 @@ now, once, when the step starts.
 
 ## Also
 
-- Nothing else changed about how flows run, record or play back.
-- Some internal tidying: a module the app had stopped using is no longer
-  imported, and several pieces of code that no longer run now say so, so that
-  anyone reading the source is not misled about which parts are live.
+- Beyond the speed-up above, nothing changed about what flows *do* when they
+  run, record or play back. Every step behaves as it did; some of them finish
+  sooner.
+- Some internal tidying: two imports the app had stopped using are gone, and
+  several pieces of code that no longer run now say so, so that anyone reading
+  the source is not misled about which parts are live.
 
 ## Verified before release
 
-Every release goes through three gates, and this one was put through them
-during development as well: the frozen binary self-tests itself (12 of 12,
-including image matching, Windows OCR and the licensing check), a launch probe
-confirms it actually shows a window, and an in-place upgrade from the previously
-published version is rehearsed against real binaries with the installed result
-passing its own self-test afterwards. `release.py` runs the first of those again
-as part of cutting the release, so the file you are downloading is the file that
-passed.
+Every release goes through three gates, and this build was put through all
+three before these notes were written: the frozen binary self-tests itself
+(12 of 12, including image matching, Windows OCR and the licensing check); a
+launch probe confirms it actually shows a window; and the published 2.3.3 was
+downloaded, its checksum matched against the one on the website, and then
+upgraded in place to this build — with the installed result passing its own
+self-test afterwards. `release.py` runs the first of those again as part of
+cutting the release, so the file you are downloading is the file that passed.
 
 ## Notes
 

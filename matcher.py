@@ -106,8 +106,23 @@ def grab_all_screens():
 
 
 # ── Core multi-scale matcher (OpenCV) ───────────────────────────────────────
-def _best_match_cv2(hay_rgb, needle_rgb, scales, grayscale) -> Optional[Match]:
-    """Best match of needle within hay across scales. Score-only, no threshold."""
+def _best_match_cv2(hay_rgb, needle_rgb, scales, grayscale,
+                    should_continue=None) -> Optional[Match]:
+    """Best match of needle within hay across scales. Score-only, no threshold.
+
+    ⚠ `should_continue` is what makes Stop work during a Detect step. Without
+    it a full-screen search is a single uninterruptible ~2 s block of C code,
+    and `main.SequenceTab.is_playing` documents the consequence: `stop_playback`
+    waits 1.5 s, the worker is still on the CPU when that expires, and the run
+    has to be *retired* — tracked separately so Play cannot start a second
+    worker alongside the first. That is the symptom being managed; this is the
+    cause. Checked between scales, so Stop lands within one `matchTemplate`
+    (~130 ms in colour, ~36 ms in grey) instead of within the whole search.
+
+    Returns None when abandoned, never a partial best: the caller cannot tell
+    "stopped early" from "this is genuinely the best" otherwise, and one of
+    those answers gets *clicked*.
+    """
     hay = _np.asarray(hay_rgb)
     needle = _np.asarray(needle_rgb)
     if grayscale:
@@ -121,6 +136,8 @@ def _best_match_cv2(hay_rgb, needle_rgb, scales, grayscale) -> Optional[Match]:
 
     best: Optional[Match] = None
     for s in scales:
+        if should_continue is not None and not should_continue():
+            return None
         tw, th = int(round(nw * s)), int(round(nh * s))
         if tw < _MIN_TEMPLATE_PX or th < _MIN_TEMPLATE_PX or tw > W or th > H:
             continue
@@ -190,13 +207,19 @@ def _shifted(m: Optional[Match], dx: int, dy: int) -> Optional[Match]:
 
 # ── Public API ───────────────────────────────────────────────────────────────
 def best_match(template_path: str, screenshot=None, grayscale: bool = True,
-               scales: Optional[List[float]] = None, region=None) -> Optional[Match]:
+               scales: Optional[List[float]] = None, region=None,
+               should_continue=None) -> Optional[Match]:
     """
     Return the BEST match of the template anywhere on screen, regardless of
     threshold (so the UI can display the score). None if matching impossible.
     `screenshot` may be a pre-grabbed PIL RGB image; otherwise the full virtual
     desktop is grabbed. `region` is an optional PHYSICAL (x, y, w, h) search
     area; the returned box is still in full-screenshot coordinates either way.
+
+    `should_continue` is an optional callable polled between template scales;
+    returning False abandons the search and yields None. It is how a running
+    flow makes Stop responsive — see `_best_match_cv2`. Callers that are not a
+    running flow (the UI's match preview, the self-test) leave it out.
     """
     if not ENABLED or not template_path:
         return None
@@ -211,7 +234,18 @@ def best_match(template_path: str, screenshot=None, grayscale: bool = True,
         except Exception:
             return None
         sc = scales or DEFAULT_SCALES
-        color = _best_match_cv2(shot, needle, sc, grayscale=False)
+
+        def stopped() -> bool:
+            # ⚠ Asked again *between* the passes, not only inside them. A pass
+            # that was abandoned returns None, which is indistinguishable from
+            # "this image is not on screen" — and reading it as the latter would
+            # send the grey pass off on another full search after Stop.
+            return should_continue is not None and not should_continue()
+
+        color = _best_match_cv2(shot, needle, sc, grayscale=False,
+                                should_continue=should_continue)
+        if stopped():
+            return None
         if not grayscale:
             return _shifted(color, dx, dy)
         if color is not None and color.score >= _EARLY_EXIT:
@@ -219,7 +253,10 @@ def best_match(template_path: str, screenshot=None, grayscale: bool = True,
             # spoiled. Colour just scored ~1.0, so there is nothing to rescue,
             # and this skips a second twelve-scale search. See _EARLY_EXIT.
             return _shifted(color, dx, dy)
-        gray = _best_match_cv2(shot, needle, sc, grayscale=True)
+        gray = _best_match_cv2(shot, needle, sc, grayscale=True,
+                               should_continue=should_continue)
+        if stopped():
+            return None
         # Return whichever scored higher.
         if color is None:
             return _shifted(gray, dx, dy)
@@ -234,12 +271,16 @@ def best_match(template_path: str, screenshot=None, grayscale: bool = True,
 
 def find(template_path: str, confidence: float = 0.8, screenshot=None,
          grayscale: bool = True, scales: Optional[List[float]] = None,
-         region=None) -> Optional[Match]:
+         region=None, should_continue=None) -> Optional[Match]:
     """
     Return a Match if the template is present at or above `confidence`,
     else None. Drop-in replacement for the old pyautogui.locate() calls; the
     returned box uses the same screenshot pixel coordinates. `region` narrows
     the search to a PHYSICAL (x, y, w, h) box without changing that.
+
+    `should_continue` makes the search abandonable — see `best_match`. An
+    abandoned search reports "not found", which is the safe reading: the
+    alternative is a partial best that a Wait-for-image step would *click*.
     """
     if not ENABLED or not template_path:
         return None
@@ -249,7 +290,8 @@ def find(template_path: str, confidence: float = 0.8, screenshot=None,
 
     if _HAS_CV2:
         m = best_match(template_path, screenshot=shot, grayscale=grayscale,
-                       scales=scales, region=region)
+                       scales=scales, region=region,
+                       should_continue=should_continue)
         return m if (m is not None and m.score >= confidence) else None
 
     # Fallback path honours confidence directly via pyautogui.
@@ -259,7 +301,7 @@ def find(template_path: str, confidence: float = 0.8, screenshot=None,
 
 
 def present(template_path: str, confidence: float = 0.8, screenshot=None,
-            region=None) -> bool:
+            region=None, should_continue=None) -> bool:
     """Convenience boolean: is the template on screen at/above confidence?"""
     return find(template_path, confidence=confidence, screenshot=screenshot,
-                region=region) is not None
+                region=region, should_continue=should_continue) is not None
