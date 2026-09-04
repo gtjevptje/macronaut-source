@@ -1049,3 +1049,84 @@ def test_no_document_hardcodes_an_exact_test_count():
         "these state an exact test count, which goes stale the next time "
         "anybody adds a test:\n" + "\n".join(offenders)
         + "\nSay 'about 800' or give the command instead.")
+
+
+def test_no_document_states_a_file_size_that_is_no_longer_true():
+    """The same rot as the test count, in the one place it does real damage.
+
+    `CLAUDE.md` and the scout agent both said "the 167 KB `main.py`" in the
+    sentence telling a reader never to open it whole. On 4 September 2026 that
+    file was 292 KB — the claim had been wrong by most of its own value for
+    long enough that nobody noticed, and it is load-bearing: an agent budgets
+    its reading against that number.
+
+    Where a size *is* published it is already derived — `build_site._exe_size_mb`
+    measures `dist/Macronaut.exe` rather than trusting the "78 MB" on the page —
+    so this check exists for the hand-typed ones that slipped in beside it.
+
+    Scope is deliberately narrow: a number-and-unit immediately beside a
+    backticked path that actually resolves to a file in this repo. That is why
+    "11.8 MB `opencv_videoio_ffmpeg`" and "single 78 MB `.exe`" are untouched —
+    neither names a file here, and the first is a note about an upstream wheel
+    that is *supposed* to record what it was at the time.
+
+    ±15% of the real size, because the point is a claim that has drifted, not
+    KB-versus-KiB; both readings of the unit are accepted for the same reason.
+    Past-tense lines are exempt exactly as above, since the CLAUDE.md line that
+    now records this mistake has to quote the wrong number to do so.
+    """
+    import re
+
+    pattern = re.compile(
+        r"(?:(\d+(?:\.\d+)?)\s*(KB|MB|KiB|MiB)\s+`([^`]+)`"
+        r"|`([^`]+)`\s*\(?\s*(\d+(?:\.\d+)?)\s*(KB|MB|KiB|MiB))", re.I)
+    # ⚠ These exempt only what comes AFTER them on the line, and "was" is not
+    # among them. A marker matched anywhere on the line would let a genuinely
+    # stale claim through on any sentence that happened to use a past tense —
+    # the same over-broad exemption that made the test-count check above miss
+    # both of the lines it was written for.
+    past = ("said", "used to", "for a while", "until ", "by then", "no longer")
+
+    docs = ["README.md", "CONTRIBUTING.md", "CLAUDE.md", "ROADMAP.md",
+            "GROWTH.md", "SECURITY.md"]
+    agents = os.path.join(ROOT, ".claude", "agents")
+    if os.path.isdir(agents):
+        docs += [os.path.join(".claude", "agents", f)
+                 for f in os.listdir(agents) if f.endswith(".md")]
+
+    offenders = []
+    for name in docs:
+        path = os.path.join(ROOT, name)
+        if not os.path.isfile(path):
+            continue
+        with open(path, encoding="utf-8") as fh:
+            for i, line in enumerate(fh, 1):
+                low = line.lower()
+                for m in pattern.finditer(line):
+                    if any(0 <= low.find(w) < m.start() for w in past):
+                        continue
+                    num, unit, ref = (m.group(1), m.group(2), m.group(3))
+                    if ref is None:
+                        ref, num, unit = m.group(4), m.group(5), m.group(6)
+                    target = os.path.join(ROOT, ref.replace("/", os.sep))
+                    if not os.path.isfile(target):
+                        continue        # not a file here — not this test's business
+                    real = os.path.getsize(target)
+                    claimed = float(num) * (1_000 if unit.upper() == "KB" else
+                                            1_000_000 if unit.upper() == "MB" else
+                                            1024 if unit.upper() == "KIB" else
+                                            1024 * 1024)
+                    # Accept whichever convention flatters the claim; a drift
+                    # this test should catch is far bigger than 1000-vs-1024.
+                    binary = float(num) * (1024 if unit.upper().startswith("K")
+                                           else 1024 * 1024)
+                    if any(abs(real - c) <= 0.15 * real for c in (claimed, binary)):
+                        continue
+                    offenders.append(
+                        f"  {name}:{i}  claims {num} {unit} for {ref}, "
+                        f"which is {real / 1024:.0f} KB")
+
+    assert not offenders, (
+        "these state a file size that no longer matches the file:\n"
+        + "\n".join(offenders)
+        + "\nSay it in words ('the biggest file here') or give `wc -c`.")
