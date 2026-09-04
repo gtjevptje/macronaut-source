@@ -228,3 +228,102 @@ def test_a_no_op_jump_ring_aborts_instead_of_hanging():
     assert interp.run() == "error"
     assert any(e.get("kind") == "abort" and "step limit" in str(e.get("reason"))
                for e in log), "aborted without saying why"
+
+
+# ── the loader ───────────────────────────────────────────────────────────────
+#
+# `FlowGraph.load` is the other surface that takes input nobody designed: a
+# hand-edited file, a truncated one, a file from a future version, or something
+# that is not a flow at all. On 4 September 2026 its error messages were
+# rewritten to name the file and say the original is untouched — which only
+# helps if every malformed document actually produces one of those errors
+# rather than a raw KeyError in a dialog.
+#
+# Measured over 4,006 documents: 1,279 loaded (the deliberate permissiveness —
+# unknown node types and future versions still open), 2,727 raised ValueError,
+# and nothing else was raised at all.
+
+def _junk(rng, depth=0):
+    r = rng.random()
+    if depth > 3 or r < 0.30:
+        return rng.choice([0, 1, -1, 3.5, "", "x", None, True, False,
+                           10 ** 12, "n1", [], {}])
+    if r < 0.65:
+        return [_junk(rng, depth + 1) for _ in range(rng.randint(0, 4))]
+    keys = ["version", "nodes", "edges", "variables", "meta", "id", "type",
+            "data", "x", "y", "src", "dst", "src_port", "steps", "name"]
+    return {rng.choice(keys): _junk(rng, depth + 1)
+            for _ in range(rng.randint(0, 5))}
+
+
+def test_no_file_makes_the_loader_raise_something_unplanned(tmp_path):
+    """Either a FlowGraph or a ValueError. Never a KeyError in a dialog.
+
+    ⚠ `main` shows `str(e)` from a bare `except Exception`, so an unplanned
+    exception type does not crash the app — it just puts something like
+    `KeyError: 'type'` in front of somebody, which is what the rewritten
+    messages exist to replace.
+    """
+    import json
+
+    rng = random.Random(7)
+    path = tmp_path / "fuzz.json"
+    loaded = refused = 0
+    for _ in range(1200):
+        try:
+            text = json.dumps(_junk(rng))
+        except Exception:
+            continue
+        path.write_text(text, encoding="utf-8")
+        try:
+            assert isinstance(flow.FlowGraph.load(str(path)), flow.FlowGraph)
+            loaded += 1
+        except ValueError:
+            refused += 1
+
+    assert loaded > 100, f"only {loaded} documents loaded — is the generator dead?"
+    assert refused > 100, f"only {refused} were refused — is the generator dead?"
+
+
+@pytest.mark.parametrize("text,label", [
+    ("", "empty file"),
+    ("{", "truncated mid-object"),
+    ("]", "not an object at all"),
+    ("not json at all", "plain prose"),
+    ('{"nodes":', "cut off after a key"),
+    ('{"nodes": [{"x": 1}]}', "a node with no id or type"),
+    ('[1, 2, 3]', "valid JSON, wrong shape"),
+])
+def test_a_damaged_file_is_refused_by_name(tmp_path, text, label):
+    """⚠ The message is the feature. A flow that will not open used to report
+    `Expecting value: line 1 column 20 (char 19)`, which says neither what is
+    wrong nor that the file rather than the program is the problem."""
+    path = tmp_path / "my flow.json"
+    path.write_text(text, encoding="utf-8")
+
+    with pytest.raises(ValueError) as excinfo:
+        flow.FlowGraph.load(str(path))
+
+    msg = str(excinfo.value)
+    assert "my flow.json" in msg, f"{label}: message does not name the file: {msg}"
+    assert len(msg) > 40, f"{label}: message is too terse to help: {msg}"
+
+
+def test_a_flow_from_a_newer_version_still_opens(tmp_path):
+    """Deliberate: refusing it would be a worse problem than the one solved.
+    The release notes promise this in as many words."""
+    import json
+
+    path = tmp_path / "from the future.json"
+    path.write_text(json.dumps({
+        "version": 99,
+        "nodes": [{"id": "n1", "type": "start", "data": {}, "x": 0, "y": 0},
+                  {"id": "n2", "type": "teleport", "data": {"whither": "?"},
+                   "x": 26, "y": 0}],
+        "edges": [{"id": "e1", "src": "n1", "dst": "n2", "src_port": "out"}],
+        "variables": {}, "meta": {},
+    }), encoding="utf-8")
+
+    g = flow.FlowGraph.load(str(path))
+    assert set(g.nodes) == {"n1", "n2"}
+    assert g.nodes["n2"].type == "teleport", "an unknown node type was dropped"

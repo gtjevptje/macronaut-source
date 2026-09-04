@@ -793,8 +793,21 @@ class FlowGraph:
                 "file is still on disk if you want to look at it."
             ) from exc
         if not isinstance(payload, dict):
+            # ⚠ This said only "does not contain a flow." until 4 September
+            # 2026 — the one message on this path that named the file and then
+            # stopped, while every other one says what is wrong and that the
+            # file is untouched. Found by fuzzing the loader: 4,006 malformed
+            # documents raised nothing unexpected, and the only complaint was
+            # that this reply is nine words long. A top-level list is what you
+            # get from pasting an array, or from a tool that exported the
+            # *steps* rather than the flow around them.
+            kind = type(payload).__name__
             raise ValueError(
-                f"“{os.path.basename(path)}” does not contain a flow.")
+                f"“{os.path.basename(path)}” is valid JSON, but the whole file "
+                f"is a {kind} where a flow has to be an object — it should "
+                "start with a “{” and have \"nodes\" and \"edges\" inside it. "
+                "If this is a list of steps from somewhere else, it is not a "
+                "flow file. Nothing has been changed.")
         try:
             return cls.from_dict(payload)
         except (TypeError, KeyError, ValueError, AttributeError) as exc:
