@@ -1087,3 +1087,33 @@ def test_good_settings_still_load(tmp_path, monkeypatch):
     assert s.input_backend == "sendinput"
     # An int for a float field is fine and is stored as a float.
     assert _settings_from(tmp_path, monkeypatch, {"seq_speed": 2}).seq_speed == 2.0
+
+
+def test_an_old_settings_file_still_loads_after_a_field_is_removed(tmp_path,
+                                                                   monkeypatch):
+    """⚠ The direction that makes removing a setting safe, pinned.
+
+    Eight fields were removed on 4 September 2026 — leftovers from the pre-2.0
+    Basic tab that nothing read: `use_fixed_position`, `limit_seconds`,
+    `limit_time`, `use_image_trigger`, `image_trigger_path`,
+    `keystroke_randomize`, `keystroke_random_range_ms`, `seq_loop_count`.
+
+    That is safe only because `_load` ignores a key it does not recognise, so
+    every settings.json already in the wild keeps opening and simply drops the
+    extras on its next save. ⚠ *Renaming* a field is the dangerous operation
+    and always was: the old name is ignored and the new one takes its default,
+    which silently resets whatever the user had chosen.
+    """
+    gone = {
+        "use_fixed_position": True, "limit_seconds": 30,
+        "limit_time": "09:00:00", "use_image_trigger": True,
+        "image_trigger_path": "C:/old.png", "keystroke_randomize": True,
+        "keystroke_random_range_ms": 99, "seq_loop_count": 7,
+    }
+    s = _settings_from(tmp_path, monkeypatch, {**gone, "seq_speed": 3.0,
+                                               "always_on_top": True})
+    for name in gone:
+        assert not hasattr(s, name), f"{name} is still a setting"
+    # And the keys that survive are unaffected by the ones that did not.
+    assert s.seq_speed == 3.0
+    assert s.always_on_top is True

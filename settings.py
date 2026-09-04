@@ -54,7 +54,6 @@ class AppSettings:
     button: str = "left"                  # left | right | middle
     click_type: str = "single"            # single | double | hold
     hold_duration_ms: int = 100
-    use_fixed_position: bool = False
     fixed_x: int = 0
     fixed_y: int = 0
     interval_ms: int = 1000
@@ -66,10 +65,8 @@ class AppSettings:
     max_speed: bool = False
 
     # ── Stop conditions ─────────────────────────────────────────────
-    limit_mode: str = "infinite"          # infinite | count | seconds | time
+    limit_mode: str = "infinite"          # infinite | count
     limit_count: int = 100
-    limit_seconds: int = 60
-    limit_time: str = "17:00:00"          # HH:MM:SS
 
     # ── Startup ─────────────────────────────────────────────────────
     start_delay_seconds: int = 0
@@ -112,16 +109,12 @@ class AppSettings:
     focus_window_title: str = ""
 
     # ── Image recognition trigger ────────────────────────────────────
-    use_image_trigger: bool = False
-    image_trigger_path: str = ""
     image_trigger_confidence: float = 0.8
 
     # ── Keystroke automation ─────────────────────────────────────────
     typing_speed_cps: float = 10.0
     keystroke_blacklist: List[str] = field(default_factory=list)
     keystroke_interval_ms: int = 50
-    keystroke_randomize: bool = False
-    keystroke_random_range_ms: int = 20
     input_backend: str = "pynput"         # pynput | sendinput | interception
     key_hold_ms: int = 60                 # how long a tapped key stays down;
                                           # games poll per frame, miss 0ms taps
@@ -170,7 +163,6 @@ class AppSettings:
     theme_chosen: bool = False
 
     # ── Sequence playback ────────────────────────────────────────────
-    seq_loop_count: int = 1
     seq_speed: float = 1.0
     # Whether the timeline strip under the canvas is unfolded. Remembered
     # because folding it is a deliberate "give me the canvas back" choice, and

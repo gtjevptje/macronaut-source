@@ -694,7 +694,6 @@ class CompactFace(QWidget):
         s.interval_ms = self._interval_ms() or s.interval_ms
         s.button = "right" if self._btn_grp.checkedId() == 1 else "left"
         s.human_mode = self._human.isChecked()
-        s.use_image_trigger = False
         s.always_on_top = self._btn_pin.isChecked()
         if self._rb_count.isChecked():
             s.limit_mode = "count"; s.limit_count = self._repeat_count.value()
