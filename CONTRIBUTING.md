@@ -59,9 +59,13 @@ installs to run Macronaut, not what a contributor installs to test it.
 python -m pytest -q
 ```
 
-748 tests, about 35 seconds. They must all pass before a PR is merged, and CI
-runs them on a clean Windows runner on every push, along with building the
-`.exe` and self-testing the binary it produced.
+Upwards of eight hundred tests, about 35 seconds. They must all pass before a PR
+is merged, and CI runs them on a clean Windows runner on every push, along with
+building the `.exe` and self-testing the binary it produced.
+
+(The exact figure is deliberately not written here. It said 748 for a while
+after the suite had grown well past that, and a number nobody updates is worse
+than no number — you would reasonably wonder what you had broken.)
 
 `conftest.py` sets `QT_QPA_PLATFORM=offscreen` and redirects the settings
 directory into a tempdir before any test module loads, so the suite never
