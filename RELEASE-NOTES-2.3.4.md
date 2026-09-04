@@ -49,6 +49,13 @@ A flow saved by a *newer* Macronaut than the one you are running still opens.
 That is deliberate: refusing it would be a worse problem than the one being
 solved here.
 
+**A step that watches for an image now says when the image is missing.** If you
+move or delete a picture a Detect step was looking for, that step used to wait
+out its whole timeout and report "not found" — exactly what it reports when the
+thing simply is not on screen. An If / Else was worse: it just kept taking the
+same branch, so the flow looked like it was working. The run log names the file
+now, once, when the step starts.
+
 ## Also
 
 - Nothing else changed about how flows run, record or play back.
@@ -58,11 +65,14 @@ solved here.
 
 ## Verified before release
 
-This build was put through the three gates on the developer's machine before
-publishing: it self-tests inside the frozen binary (12 of 12, including image
-matching, Windows OCR and the licensing check), it starts and shows a window,
-and an in-place upgrade from the published 2.3.3 was rehearsed against real
-binaries with the installed result passing its own self-test afterwards.
+Every release goes through three gates, and this one was put through them
+during development as well: the frozen binary self-tests itself (12 of 12,
+including image matching, Windows OCR and the licensing check), a launch probe
+confirms it actually shows a window, and an in-place upgrade from the previously
+published version is rehearsed against real binaries with the installed result
+passing its own self-test afterwards. `release.py` runs the first of those again
+as part of cutting the release, so the file you are downloading is the file that
+passed.
 
 ## Notes
 
