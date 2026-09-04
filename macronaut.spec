@@ -189,6 +189,15 @@ a = Analysis(
 #     thumbnail. Cheap insurance; leave them.
 #   libcrypto-3.dll / libssl-3.dll — Python's own OpenSSL. HTTPS in updater.py
 #     and crashsend.py runs on these. Only the `-x64` DUPLICATES go (see below).
+#   numpy.libs\libscipy_openblas64_*.dll (20.4 MB raw, 6.5 MB of the download)
+#     — ⚠ TRIED AND IT BREAKS EVERYTHING. 4 September 2026. The app's entire
+#     use of numpy is two `np.asarray` calls in matcher.py and no linear
+#     algebra whatsoever, so this looks like 6.5 MB of free download. It is
+#     not: `_multiarray_umath` links against it at *load* time, so excluding it
+#     means numpy will not import — and cv2 imports numpy, so image matching
+#     dies with it. Measured: the .exe drops 77.8 -> 71.4 MB and `--selftest`
+#     reports "BROKEN: numpy, cv2, image match - do not ship this build".
+#     Do not try this again; the size is not optional.
 _unused = (
     # QML/Quick/PDF: PySide6's hooks collect them regardless; this app is pure
     # QtWidgets.
