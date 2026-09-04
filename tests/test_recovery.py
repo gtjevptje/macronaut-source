@@ -574,3 +574,45 @@ def test_a_damaged_payload_is_dropped_rather_than_asked_about_forever(window,
                         staticmethod(lambda *a, **kw: main.QMessageBox.Yes))
     window._offer_recovery()
     assert recovery.read() is None
+
+
+def test_starting_the_app_makes_the_offer_without_being_asked(fresh_window,
+                                                              monkeypatch):
+    """⚠ Wiring. Every other test in this file calls `_offer_recovery()` itself.
+
+    Found by mutation audit on 4 September 2026: deleting
+    `QTimer.singleShot(0, self._offer_recovery)` from `MainWindow.__init__`
+    broke **nothing** in 897 tests. The whole feature would have stopped
+    working — an unsaved canvas kept faithfully and never once offered back —
+    and the suite would have stayed green.
+
+    So this one never calls it. It writes a payload, builds a window, lets the
+    event loop turn, and expects the flow to be back on the canvas.
+    """
+    import main
+    from PySide6.QtWidgets import QApplication
+
+    # ⚠ Drain first, and this is not superstition. Every MainWindow built in
+    # this file schedules its own `singleShot(0, _offer_recovery)`, and almost
+    # no test turns the event loop — so by the time this one runs there is a
+    # queue of pending offers belonging to earlier, still-alive windows. The
+    # first `processEvents()` below fires all of them; one of those old windows
+    # then takes the payload, restores it into *its* canvas and clears the
+    # file, and this test sees an empty canvas and fails. It passed in
+    # isolation and failed in the file, which is the signature of exactly this.
+    for _ in range(8):
+        QApplication.processEvents()
+
+    recovery.write(_worked_graph("offer me unprompted"), "")
+    monkeypatch.setattr(main.QMessageBox, "question",
+                        staticmethod(lambda *a, **kw: main.QMessageBox.Yes))
+
+    w = fresh_window()
+    for _ in range(8):                      # singleShot(0) needs one turn
+        QApplication.processEvents()
+
+    texts = [n.data.get("text") for n in w._sequence_tab._graph.nodes.values()
+             if n.type == flow.N_ACTION]
+    assert texts == ["offer me unprompted"], (
+        "the app started and never offered the unsaved flow back")
+    assert recovery.read() is None, "the payload was not retired"
