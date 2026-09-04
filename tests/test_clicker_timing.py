@@ -1,26 +1,27 @@
-"""The click interval has to be the interval the user asked for.
+"""Pacing: the interval asked for has to be the interval delivered.
 
-⚠ **The bug these exist for.** `clicker._sleep` timed its deadline with
-`time.monotonic()`, which on Windows is GetTickCount64 at **15.625 ms**
-resolution, so every wait quantised up to the next tick. `time.sleep` was
-never at fault — it is accurate to well under a millisecond here. Measured as
-the gap between consecutive clicks, mouse stubbed:
+⚠ **Read this before trusting the git history of this file.** It was first
+written against `clicker.ClickWorker`, where a real 15.625 ms clock bug was
+found, fixed, measured and reported as an improvement to the shipped
+auto-clicker. `clicker.py` is dead — nothing imports it, it is not in the .exe,
+and its own first line says so. The live pacing primitive is
+`flow_exec.FlowWorker.sleep`, which every timed thing in the running engine goes
+through, and which was already correct. See `tests/test_module_reachability.py`,
+which exists because of that mistake.
 
-    interval   promised     was       now
-      50 ms     20 /s     16.0 /s   19.9 /s
-      10 ms    100 /s     91.7 /s   95.1 /s
-    Max speed             61.5 /s  181.4 /s
+So these now test the live path. What the bug was, kept because the shape of it
+recurs: a deadline timed with `time.monotonic()` is timed with GetTickCount64 on
+Windows, resolution 15.625 ms, so every wait rounds up to the next tick — a 5 ms
+*and* a 10 ms wait both take 16.00 ms, 50 ms takes 62.50, 200 ms takes 203.00.
+`time.sleep` is not the culprit; it is accurate to well under a millisecond.
 
-Every "was" figure is an exact multiple of 15.625 ms, which is what gave it
-away. The website publishes that interval table, so these are numbers a visitor
-can check with a stopwatch.
+Measured on the live primitive, which is what the numbers should always have
+been about:
 
-⚠ `flow_exec.Executor.sleep` had already been fixed for this, and its comment
-even predicted the number — "it caps click rate at ~64 CPS however low the
-interval goes". The fix was never carried across to the Basic clicker. So the
-most valuable test here is not the timing one, it is
-`test_no_pacing_loop_reads_the_coarse_clock`, which pins the rule everywhere at
-once rather than in the one place it was noticed.
+    target      median     error
+      5 ms      5.48 ms    +9.5%     <- time.sleep's own ~0.5 ms overhead
+     50 ms     50.34 ms    +0.7%
+    100 ms    100.37 ms    +0.4%
 """
 import ast
 import os
@@ -33,49 +34,39 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-import clicker
 
+@pytest.fixture
+def pacer():
+    """A FlowWorker built without Qt, for `sleep` alone.
 
-class _DeadMouse:
-    """Nothing here may reach the real desktop — same rule as conftest."""
-    position = (100, 100)
-
-    def __init__(self):
-        self.t = []
-
-    def click(self, button, count=1):
-        self.t.append(time.perf_counter())
-
-    def press(self, button):
-        pass
-
-    def release(self, button):
-        pass
-
-
-def _worker(interval_ms, seconds):
-    w = clicker.ClickWorker()
-    w._mouse = _DeadMouse()
-    w.interval_ms = interval_ms
-    w.stop_after_secs = seconds
+    `sleep` needs exactly two things: `self._running` and the clock. Building a
+    real FlowWorker would drag in a QThread and an interpreter for no benefit.
+    """
+    import flow_exec
+    w = flow_exec.FlowWorker.__new__(flow_exec.FlowWorker)
+    w._running = True
     return w
 
 
-# ── the rule, pinned everywhere ──────────────────────────────────────────────
+# ── the rule, pinned across every module ─────────────────────────────────────
 
 # Functions that legitimately read the coarse clock while also sleeping. Each
-# one measures WHOLE SECONDS, where 15.625 ms is 0.05% and nobody can tell.
+# measures WHOLE SECONDS, where 15.625 ms is 0.05% and nobody can tell.
 #
 # ⚠ Every entry is asserted to still match something, so a rename or a deletion
 # fails this test rather than quietly leaving a permanent exemption behind.
 _COARSE_IS_FINE = {
     ("clicker.py", "run"):
-        "t0 is a start time for stop_after_secs, a whole-seconds limit; its "
-        "sleeps are 50/100/300 ms guard polls where a tick does not matter",
+        "⚰ dead module; t0 is a start time for a whole-seconds limit anyway",
     ("updater.py", "_wait_for_exit"):
         "waits seconds for another process to exit",
     ("interception_backend.py", "_cli"):
         "a __main__ diagnostic that times whole seconds",
+    # ⚠ `flow_exec._do_autoclick` was listed here and should not have been: it
+    # reads time.monotonic() for a whole-seconds run limit but never calls
+    # time.sleep — it paces through `self.sleep`, so the sweep never matches it
+    # and the exemption was dead on arrival. The anti-rot assertion below found
+    # that on the first run. An allowlist you do not check is a list of guesses.
 }
 
 
@@ -83,8 +74,10 @@ def test_no_pacing_loop_reads_the_coarse_clock():
     """A function that both sleeps and reads `time.monotonic()` is pacing on a
     15.625 ms clock, whatever it thinks it is doing.
 
-    This is the test that would have caught the original: the flow engine was
-    fixed, the clicker was not, and nothing connected the two.
+    ⚠ This is the part of the original work that survived contact with the
+    facts: it sweeps every module rather than the one place a bug was noticed,
+    so it covers the live engine and not only the module that happened to be
+    read first.
     """
     offenders = []
     seen = set()
@@ -132,19 +125,18 @@ def test_no_pacing_loop_reads_the_coarse_clock():
         "the next function to take that name inherits the exemption.")
 
 
-# ── the behaviour ────────────────────────────────────────────────────────────
+# ── the live pacing primitive ────────────────────────────────────────────────
 
 def _typical(fn, tries=9):
     """Median of N.
 
-    ⚠ This was best-of-N first, on the reasoning that a loaded machine can
-    make a sample slow but not fast, so the minimum is the honest floor. That
-    is right for overhead and **wrong for quantisation**, which is the bug
-    here: where the deadline lands relative to the next 15.625 ms tick is
-    uniform, so the coarse clock produces gaps from nearly 0 up to 15.6 ms and
-    the minimum is *fast*. Both tests using it passed with the bug deliberately
-    reinstated. The median moves under quantisation and shrugs off load spikes,
-    so it is the statistic that actually distinguishes the two.
+    ⚠ This was best-of-N first, on the reasoning that a loaded machine can make
+    a sample slow but not fast, so the minimum is the honest floor. That is
+    right for overhead and **wrong for quantisation**: where a deadline lands
+    relative to the next 15.625 ms tick is uniform, so a coarse clock produces
+    waits from nearly 0 up to 15.6 ms and its *minimum is fast*. Two tests using
+    it passed with the bug deliberately reinstated. The median moves under
+    quantisation and shrugs off load spikes.
     """
     xs = []
     for _ in range(tries):
@@ -155,67 +147,42 @@ def _typical(fn, tries=9):
 
 
 @pytest.mark.parametrize("ms,ceiling_ms", [(5, 12), (20, 30), (50, 60)])
-def test_a_short_wait_is_not_rounded_up_to_the_next_tick(ms, ceiling_ms):
-    """⚠ The ceilings are set below what the tick would force, and above what
-    a correct implementation costs. Quantised, a 5 ms wait took 16.00 ms, a
-    20 ms wait 31.25, a 50 ms wait 62.50 — every ceiling here is under the
-    corresponding tick multiple, so the old code fails all three, while a
-    correct one has room for `time.sleep`'s own ~0.5 ms of overhead.
+def test_a_short_wait_is_not_rounded_up_to_the_next_tick(pacer, ms, ceiling_ms):
+    """⚠ Each ceiling sits below the tick multiple that quantisation would
+    force and above what a correct implementation costs. Quantised, a 5 ms wait
+    took 16.00 ms, 20 ms took 31.25, 50 ms took 62.50 — so a coarse clock fails
+    all three, while `time.sleep`'s own ~0.5 ms of overhead fits comfortably.
     """
-    w = clicker.ClickWorker()
-    w._mouse = _DeadMouse()
-    w._running = True
-    took = _typical(lambda: w._sleep(ms / 1000.0))
+    took = _typical(lambda: pacer.sleep(ms / 1000.0))
     assert took * 1000 < ceiling_ms, (
-        f"_sleep({ms} ms) took {took * 1000:.2f} ms; "
-        f"{ms} ms rounded up to a 15.625 ms tick would be about "
+        f"sleep({ms} ms) took {took * 1000:.2f} ms; {ms} ms rounded up to a "
+        f"15.625 ms tick would be about "
         f"{15.625 * (int(ms / 15.625) + 1):.2f} ms")
 
 
-def test_max_speed_is_no_longer_capped_at_the_tick_rate():
-    """Interval 0 is floored at 5 ms by `_interval`, so ~180 clicks/second is
-    the shape of the answer. Quantisation put a hard ceiling near 64."""
-    w = _worker(0, 0.6)
-    w.run()
-    t = w._mouse.t
-    assert len(t) > 20, f"only {len(t)} clicks in 0.6 s"
-    gaps = sorted(b - a for a, b in zip(t, t[1:]))
-    median_ms = gaps[len(gaps) // 2] * 1000
-    assert median_ms < 10.0, (
-        f"{median_ms:.2f} ms between clicks = {1000 / median_ms:.0f}/s; "
-        "the 15.625 ms tick used to hold this at about 64/s")
+def test_a_long_interval_lands_where_it_was_asked_to(pacer):
+    """The rates the website's interval table promises are built out of this."""
+    took = _typical(lambda: pacer.sleep(0.1), tries=5) * 1000
+    assert 99 <= took < 108, f"sleep(100 ms) took {took:.2f} ms"
 
 
-def test_the_interval_the_user_asks_for_is_the_interval_they_get():
-    """50 ms is the row of the published table that was worst: 16.0/s against
-    a promised 20/s. This checks the app against its own advertising."""
-    w = _worker(50, 1.2)
-    w.run()
-    t = w._mouse.t
-    assert len(t) > 8, f"only {len(t)} clicks in 1.2 s"
-    gaps = sorted(b - a for a, b in zip(t, t[1:]))
-    median_ms = gaps[len(gaps) // 2] * 1000    # see _typical: not the minimum
-    assert 48 <= median_ms < 58, (
-        f"median gap {median_ms:.2f} ms for a 50 ms interval "
-        "(quantised, this was 62.50)")
-
-
-# ── the property the rewrite had to preserve ─────────────────────────────────
-
-def test_stop_still_cuts_a_long_wait_short():
-    """`_sleep` is interruptible on purpose — Stop must not wait out a
-    ten-second interval. The rewrite changed the loop's shape, so this is the
-    thing it could plausibly have broken."""
+def test_stop_still_cuts_a_long_wait_short(pacer):
+    """`sleep` is interruptible on purpose — Stop must not wait out a ten-second
+    interval. It is the property a rewrite of this loop could plausibly break.
+    """
     import threading
 
-    w = clicker.ClickWorker()
-    w._mouse = _DeadMouse()
-    w._running = True
-    threading.Timer(0.05, w.request_stop).start()
-
+    threading.Timer(0.05, lambda: setattr(pacer, "_running", False)).start()
     t0 = time.perf_counter()
-    w._sleep(10.0)
+    pacer.sleep(10.0)
     took = time.perf_counter() - t0
 
-    assert took < 1.0, f"_sleep ignored request_stop for {took:.2f} s"
+    assert took < 1.0, f"sleep ignored the stop flag for {took:.2f} s"
     assert took >= 0.04, "returned before the stop could have been requested"
+
+
+def test_a_negative_or_zero_wait_returns_at_once(pacer):
+    """`max(0.0, secs)` — a node whose deadline has already passed must not
+    block, and must not throw."""
+    assert _typical(lambda: pacer.sleep(-1.0), tries=3) < 0.005
+    assert _typical(lambda: pacer.sleep(0.0), tries=3) < 0.005

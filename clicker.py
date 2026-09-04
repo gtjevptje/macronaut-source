@@ -2,8 +2,14 @@
 
 Read this before spending any time here. It was Macronaut's original clicking
 engine; the 2.0 rewrite replaced it with the `autoclick` node, and the live
-implementation is `flow_exec.FlowInterpreter._run_autoclick`, which was ported
-from `ClickWorker.run()` below and is where a fix actually belongs.
+implementation is `flow_exec.FlowWorker._do_autoclick`, which was ported from
+`ClickWorker.run()` below and is where a fix actually belongs.
+
+⚠ That name was `FlowInterpreter._run_autoclick` here until 4 September 2026 and
+matched nothing — a signpost pointing at a symbol that does not exist. It cost a
+session: a real 15.625 ms clock bug was found in the code *below* and fixed and
+reported as a shipped-app fix, because grep lands you in the middle of a file
+and this banner never got read. If you are editing anything here, stop.
 
 It is still in the tree for two reasons and neither is that it works. The mount
 this project is developed on refuses deletes, and the published source is a

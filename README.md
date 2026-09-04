@@ -60,13 +60,16 @@ To run from source instead, see [Installation](#installation) below.
 This is what opens if all you wanted was an auto clicker.</em></p>
 
 ### Basic clicking
-- Left, right, or middle mouse button
-- Single click, double click, or hold-down mode (with adjustable hold duration)
+- Left or right mouse button
 - Click at the current cursor position or a fixed coordinate (3-second eyedropper capture)
-- Adjustable click interval with millisecond precision
+- Adjustable click interval with millisecond precision, down to 5 ms
 - Optional interval randomisation (±N ms) to vary the rhythm
-- Stop after N clicks, after N seconds, or at a specific time of day (auto-wraps to tomorrow)
+- Run until stopped, or stop after N clicks or N seconds
 - Optional countdown delay before clicking starts
+- Human mode: jitters the cursor and the timing so the rhythm is not machine-perfect
+
+The **Click** step on the canvas adds the rest: the middle button, double-click
+and hold-down with an adjustable hold duration.
 
 ### Sequence builder
 - Record live mouse clicks and keystrokes into a replayable sequence

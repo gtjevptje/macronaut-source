@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
     QDialogButtonBox, QTableWidget, QTableWidgetItem, QHeaderView, QListWidget,
     QListWidgetItem, QButtonGroup, QSizePolicy, QFrame, QScrollArea,
     QTextEdit, QPlainTextEdit, QAbstractItemView, QMessageBox, QMenu, QSplitter,
-    QLayout, QTimeEdit, QSizeGrip, QStyledItemDelegate, QStyle,
+    QLayout, QSizeGrip, QStyledItemDelegate, QStyle,
     QAbstractButton, QSlider, QAbstractSpinBox, QStyleOptionButton,
     QStackedWidget,
 )
