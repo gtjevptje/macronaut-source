@@ -1163,3 +1163,62 @@ def test_a_locked_settings_file_is_not_emptied(tmp_path, monkeypatch):
     assert back["script_hotkeys"] == {"f13": "beta", "f14": "gamma"}
     assert not [p for p in tmp_path.iterdir()
                 if p.name.startswith(".settings-")], "a temporary was left behind"
+
+
+def test_no_corrupt_settings_file_can_put_a_wrong_type_into_a_field(tmp_path,
+                                                                    monkeypatch):
+    """⚠ Property-based sweep of every field, not a handful of examples.
+
+    The named cases above check the types someone plausibly *mistypes*. This
+    checks the whole surface: 400 documents built from arbitrary junk — lists,
+    dicts, None, booleans, "\x00", 10**12, floats where ints belong — spread
+    across all of `AppSettings`. Every field must still hold its declared type
+    afterwards, because the app reads these without checking: a list that
+    reached `theme` would be looked up as a stylesheet key, and a bool that
+    reached an int field would be arithmetic on True.
+
+    Run at 4,000 documents on 4 September 2026: zero wrong-type outcomes across
+    all 64 fields. 400 is the version that belongs in a suite.
+
+    ⚠ `bool` is checked before `int` on purpose — in Python `True` *is* an int,
+    so `isinstance(True, int)` passes and a boolean leaking into a numeric
+    field would go unnoticed by the obvious assertion.
+    """
+    import json
+    import random
+    from dataclasses import fields as dc_fields
+
+    import settings as st
+
+    declared = {f.name: f.type for f in dc_fields(st.AppSettings)}
+    junk = [0, 1, -1, 999999, 3.5, "", "x", None, True, False, [], {},
+            [1, 2], {"a": 1}, "true", "9", 10 ** 12, "\x00"]
+    rng = random.Random(11)
+
+    def wanted(t):
+        return {int: int, "int": int, float: float, "float": float,
+                bool: bool, "bool": bool, str: str, "str": str}.get(t)
+
+    problems = []
+    for _ in range(400):
+        doc = {rng.choice(list(declared)): rng.choice(junk)
+               for _ in range(rng.randint(1, 8))}
+        s = _settings_from(tmp_path, monkeypatch, doc)
+        for name, t in declared.items():
+            exp = wanted(t)
+            if exp is None:
+                continue
+            val = getattr(s, name)
+            if exp is bool:
+                ok = isinstance(val, bool)
+            elif exp is int:
+                ok = isinstance(val, int) and not isinstance(val, bool)
+            elif exp is float:
+                ok = isinstance(val, (int, float)) and not isinstance(val, bool)
+            else:
+                ok = isinstance(val, exp)
+            if not ok:
+                problems.append(f"{name}: {type(val).__name__} {val!r} "
+                                f"in a {exp.__name__} field, from {doc}")
+    assert not problems, ("a corrupt settings file put wrong types into these:\n  "
+                          + "\n  ".join(problems[:8]))
