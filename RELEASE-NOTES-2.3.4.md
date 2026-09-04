@@ -46,6 +46,14 @@ solved here.
   imported, and several pieces of code that no longer run now say so, so that
   anyone reading the source is not misled about which parts are live.
 
+## Verified before release
+
+This build was put through the three gates on the developer's machine before
+publishing: it self-tests inside the frozen binary (12 of 12, including image
+matching, Windows OCR and the licensing check), it starts and shows a window,
+and an in-place upgrade from the published 2.3.3 was rehearsed against real
+binaries with the installed result passing its own self-test afterwards.
+
 ## Notes
 
 - Still unsigned, so SmartScreen will still warn on first run — click
