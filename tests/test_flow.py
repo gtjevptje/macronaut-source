@@ -2242,3 +2242,45 @@ def test_a_missing_template_image_says_so_in_the_run_log(tmp_path):
     # detached launcher run reaches this before `run()` has wired one up.
     bare = flow_exec.FlowWorker.__new__(flow_exec.FlowWorker)
     bare._warn_missing_template(str(tmp_path / "also-gone.png"))
+
+
+def _here(name):
+    import os
+    return os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), name)
+
+
+def test_both_image_paths_warn_about_a_missing_template():
+    """⚠ There are two places an image path is used, and the second is worse.
+
+    A Detect *step* whose template is gone at least takes its not-found branch
+    visibly — something happens and the flow goes the other way. An **If/Else
+    condition** whose image is gone simply evaluates false every time, so the
+    flow takes the branch it always takes and looks like it is working. Nothing
+    at all is different from the outside.
+
+    Read with `ast` rather than by calling both, because reaching the condition
+    evaluator needs a screen grab. What is being pinned is that neither call
+    site is dropped in a refactor — the helper existing is no use if only one
+    path asks it.
+    """
+    import ast
+
+    src = open(_here("flow_exec.py"), encoding="utf-8").read()
+    tree = ast.parse(src)
+
+    callers = set()
+    for fn in [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]:
+        for node in ast.walk(fn):
+            if (isinstance(node, ast.Call)
+                    and getattr(node.func, "attr", "") == "_warn_missing_template"):
+                callers.add(fn.name)
+
+    # ⚠ Named, not matched on a substring. The first draft guessed the
+    # condition evaluator would be called something with "cond" or "sensor" in
+    # it; it is `_sense_image`, so the test failed on its own guess while the
+    # code was right. Reading the name costs one grep.
+    for wanted in ("_do_wait_image", "_sense_image"):
+        assert wanted in callers, (
+            f"{wanted} no longer reports a missing template; callers: "
+            f"{sorted(callers)}")

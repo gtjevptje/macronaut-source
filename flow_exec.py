@@ -944,6 +944,12 @@ class FlowWorker(QObject):
         timeout_s = float(cond.get("timeout_s", 0) or 0)
         deadline = (time.monotonic() + timeout_s) if timeout_s > 0 else None
         region = cond.get("region")
+        # ⚠ Same blind spot as `_do_wait_image`, and worse here. A Detect step
+        # that never matches at least takes its not-found branch visibly; an
+        # If/Else whose image file is gone just evaluates false every time, so
+        # the flow takes the same branch it always takes and looks like it is
+        # working. Once, before the loop.
+        self._warn_missing_template(cond.get("image_path", ""))
         while True:
             found = False
             try:
