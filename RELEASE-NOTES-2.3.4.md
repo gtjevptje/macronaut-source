@@ -70,6 +70,16 @@ A flow saved by a *newer* Macronaut than the one you are running still opens.
 That is deliberate: refusing it would be a worse problem than the one being
 solved here.
 
+**Watching the screen is about fifteen times faster when it finds something.**
+A Detect step, or an If / Else asking whether something is on screen, used to
+take around two seconds on a 1080p screen and four on an ultrawide — *even when
+it found a perfect match immediately*. It was searching twelve template sizes
+in colour and then twelve more in greyscale, every time, after the first
+comparison had already given a perfect score. It now stops once it has a match
+that near-perfect: the same answer in the same place, in about a seventh of a
+second. Deciding that something is **not** there still does the full search,
+because that is the case all those extra passes are for.
+
 **A step that watches for an image now says when the image is missing.** If you
 move or delete a picture a Detect step was looking for, that step used to wait
 out its whole timeout and report "not found" — exactly what it reports when the

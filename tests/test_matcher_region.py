@@ -75,3 +75,98 @@ def test_best_match_reports_the_same_box_with_and_without_a_region(haystack):
     m = matcher.best_match(tpl, screenshot=shot, region=(200, 150, 150, 120))
     assert m is not None
     assert (m.left, m.top) == (tx, ty)
+
+
+# ── Early exit ───────────────────────────────────────────────────────────────
+#
+# `best_match` used to run two complete twelve-scale searches — colour, then
+# grey — even when the very first comparison scored a perfect 1.0000. Measured
+# through `best_match` itself on 4 September 2026, on a synthetic desktop with
+# the template planted in it:
+#
+#     1920x1080  2042 ms -> 141 ms      3840x1080  4060 ms -> 264 ms
+#
+# Same score, same location, ~15x less time. These tests pin the three things
+# that make that safe: the answer does not change, the work really is skipped,
+# and a match that is NOT near-perfect still gets the full search.
+
+def test_a_perfect_match_still_returns_the_same_answer(haystack):
+    """The whole point: faster, not different."""
+    shot, tpl, (tx, ty) = haystack
+    m = matcher.best_match(tpl, screenshot=shot)
+    assert m is not None
+    assert (m.left, m.top) == (tx, ty)
+    assert m.score >= matcher._EARLY_EXIT
+
+
+def test_a_perfect_match_stops_instead_of_searching_every_scale(haystack, monkeypatch):
+    """⚠ Wiring, not mechanism. A threshold constant nothing breaks out of is
+    an unused constant, and the suite would stay green."""
+    shot, tpl, _ = haystack
+    calls = []
+    real = matcher._cv2.matchTemplate
+    monkeypatch.setattr(matcher._cv2, "matchTemplate",
+                        lambda *a, **k: (calls.append(1), real(*a, **k))[1])
+
+    matcher.best_match(tpl, screenshot=shot, grayscale=True)
+
+    # One comparison: colour, scale 1.0. Without the early exit this is 24 —
+    # twelve scales in colour and twelve more in grey.
+    assert len(calls) == 1, (
+        f"{len(calls)} matchTemplate calls for a perfect match; the early exit "
+        "is not being taken")
+
+
+def test_a_poor_match_still_searches_everything(haystack, monkeypatch):
+    """The case the multi-scale engine exists for must not be short-circuited.
+
+    A template that is nowhere on the screen has to be *proved* absent, which
+    means every scale and both colour modes.
+    """
+    from PIL import Image
+    shot, _, _ = haystack
+    stranger = Image.new("RGB", (20, 16), (10, 200, 90))
+    for x in range(0, 20, 4):
+        stranger.putpixel((x, x % 16), (250, 0, 250))
+    import tempfile, os as _os
+    fd, path = tempfile.mkstemp(suffix=".png")
+    _os.close(fd)
+    stranger.save(path)
+
+    calls = []
+    real = matcher._cv2.matchTemplate
+    monkeypatch.setattr(matcher._cv2, "matchTemplate",
+                        lambda *a, **k: (calls.append(1), real(*a, **k))[1])
+    try:
+        m = matcher.best_match(path, screenshot=shot, grayscale=True)
+    finally:
+        _os.unlink(path)
+
+    assert m is None or m.score < matcher._EARLY_EXIT
+    assert len(calls) > 12, (
+        f"only {len(calls)} comparisons for an absent template — the grey pass "
+        "was skipped, and that is the pass that rescues a colour-shifted match")
+
+
+def test_the_template_is_still_found_at_a_different_size(haystack):
+    """Multi-scale is the module's reason for existing. An early exit that
+    fired before the right scale was tried would break the #1 case it was
+    written for: an image captured at one DPI, searched for at another."""
+    from PIL import Image
+    shot, tpl, (tx, ty) = haystack
+    big = Image.open(tpl).convert("RGB")
+    grown = big.resize((int(big.width / 0.75), int(big.height / 0.75)),
+                       Image.LANCZOS)
+    import tempfile, os as _os
+    fd, path = tempfile.mkstemp(suffix=".png")
+    _os.close(fd)
+    grown.save(path)
+    try:
+        m = matcher.best_match(path, screenshot=shot)
+    finally:
+        _os.unlink(path)
+
+    assert m is not None
+    assert abs(m.left - tx) <= 3 and abs(m.top - ty) <= 3, (
+        f"found at {(m.left, m.top)}, planted at {(tx, ty)}")
+    assert m.score > 0.8
