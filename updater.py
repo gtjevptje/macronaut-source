@@ -94,6 +94,17 @@ class UpdateInfo:
     sha256: str
     size: int = 0
     notes: str = ""
+    # ⚠ Carried from the manifest and read by NOTHING. `release.py --mandatory`
+    # writes it, `parse_manifest` stores it, and no client consults it:
+    # `updater_ui.UpdateDialog` offers Skip / Later / Install whatever this
+    # says. Checked across the whole tree on 4 September 2026.
+    #
+    # It is the shape of promise worth being loud about, because the moment you
+    # would reach for it is a security fix you want everyone on — precisely
+    # when quietly doing nothing is most expensive. Either wire it up
+    # deliberately (which means deciding whether Macronaut is willing to take
+    # "Later" away from somebody) or drop the flag; leaving it is the one
+    # option that misleads.
     mandatory: bool = False
     published: str = ""
 

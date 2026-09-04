@@ -349,7 +349,9 @@ def main(argv: list) -> int:
     ap.add_argument("--notes", default="", help="release notes text")
     ap.add_argument("--notes-file", help="read release notes from a file")
     ap.add_argument("--mandatory", action="store_true",
-                    help="mark this update as required in the manifest")
+                    help="write mandatory:true in the manifest — ⚠ NO CLIENT "
+                         "ACTS ON IT; the update dialog still offers Later and "
+                         "Skip. See the note on UpdateInfo.mandatory.")
     args = ap.parse_args(argv)
 
     notes = args.notes
