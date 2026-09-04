@@ -372,3 +372,89 @@ def test_every_node_in_a_starter_can_be_opened(name, tmp_path):
             "it, and it is not a type with nothing to configure. This is the "
             "trap that shipped in five starters once — either give the type an "
             "editor or do not put it in a starter.")
+
+
+class _RecordingExecutor:
+    """The four methods `flow.ExecutorProtocol` documents, recording instead
+    of acting. Nothing reaches the mouse, the keyboard or the screen.
+
+    ⚠ `running()` counts down. Two of the starters loop until stopped, which is
+    the correct behaviour for an auto-clicker and an infinite loop in a test —
+    this stands in for the user pressing Stop.
+    """
+
+    def __init__(self, budget=400):
+        self.actions = []
+        self.sensors = []
+        self.slept = 0.0
+        self._budget = budget
+
+    def running(self) -> bool:
+        self._budget -= 1
+        return self._budget > 0
+
+    def sleep(self, secs: float):
+        self.slept += secs          # never actually waits
+
+    def do_action(self, step: dict, variables) -> bool:
+        self.actions.append(step.get("kind"))
+        return True
+
+    def eval_sensor(self, cond: dict, variables) -> bool:
+        self.sensors.append(cond.get("type"))
+        return False                # nothing is on this screen
+
+
+@pytest.mark.parametrize("name", [n for n, _ in starters.STARTERS])
+def test_a_starter_actually_runs(name, tmp_path):
+    """⚠ Nothing had ever executed one, and "open one and press Play" is the
+    promise the website makes about them by name.
+
+    Every other test here checks a starter's *shape* — that it has work, stays
+    inside the free tier, carries a note, needs nothing filled in. A flow can
+    satisfy all of that and still abort on its first step: a step kind the
+    interpreter does not handle, a Go to naming a label that is not there, a
+    loop whose body never reaches its own end.
+
+    Driven through `FlowInterpreter` with a recording executor, so nothing
+    touches the mouse, the keyboard or the screen. `running()` counts down,
+    standing in for the user pressing Stop — two of these deliberately run
+    until stopped.
+    """
+    import flow
+
+    g = _load_back(starters.build_all()[name], tmp_path, name="run")
+    ex = _RecordingExecutor()
+    log = []
+    status = flow.FlowInterpreter(g, ex, on_log=log.append).run()
+
+    assert status in ("done", "stopped"), (
+        f"{name} ended as {status!r}. Log tail: {log[-3:]}")
+    errors = [e for e in log if e.get("kind") in ("error", "abort")]
+    assert not errors, f"{name} logged {errors}"
+    assert ex.actions, f"{name} ran to completion without doing anything"
+
+
+def test_the_pro_example_reads_the_screen_and_touches_nothing(tmp_path):
+    """The one starter that exists to show what Pro does. It must exercise a
+    sensor — that is the whole point of it — and it must still send no input,
+    which `test_the_pro_example_touches_nothing` pins structurally and this
+    pins by running it."""
+    import flow
+
+    g = _load_back(starters.build_all()[starters.PRO_EXAMPLE], tmp_path,
+                   name="pro")
+    ex = _RecordingExecutor()
+    status = flow.FlowInterpreter(g, ex).run()
+
+    assert status in ("done", "stopped"), status
+    assert ex.actions, "the Pro example did nothing at all"
+    # ⚠ It reads the screen through Detect *steps*, not through an If/Loop
+    # condition, so the work lands in do_action rather than eval_sensor. The
+    # first draft of this test asserted the opposite and failed — the model
+    # was wrong, not the starter.
+    assert all(a in flow.DETECT_KINDS for a in ex.actions), (
+        f"the Pro example sent input: {ex.actions} — somebody who has just "
+        "paid should not have their mouse moved by the example")
+    assert "wait_text" in ex.actions, (
+        "the Pro example no longer demonstrates the OCR step it is named for")
