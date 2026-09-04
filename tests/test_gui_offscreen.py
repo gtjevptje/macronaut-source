@@ -4955,3 +4955,34 @@ def test_a_damaged_flow_is_still_listed_and_labelled(library, main_mod):
     # The good ones are unaffected.
     assert any("alpha" in n for n in names)
     assert "step" in dlg._meta_for(scripts / "alpha.json")
+
+
+def test_a_binding_whose_script_is_gone_stays_visible(window, monkeypatch,
+                                                      tmp_path, main_mod):
+    """⚠ A launcher binding can outlive its script, and losing it silently is
+    the failure to avoid.
+
+    Deleting through the Library clears the binding —
+    `test_deleting_a_bound_script_clears_its_launcher_key` covers that. Deleting
+    the *file* in Explorer cannot: Macronaut never sees it. This machine has
+    three such bindings right now, left from a launcher test whose flows were
+    removed by hand.
+
+    So the row has to keep the name. If the combo fell back to "— none —" the
+    binding would be gone on the next save, and somebody who moved a file or
+    renamed a folder would lose a key they had set up deliberately, with nothing
+    said. Marked `(missing)` instead, so it can be re-pointed.
+    """
+    tab = window._settings_tab
+    before = len(tab._sh_rows)
+    tab._add_script_hotkey_row("f19", "a script that is not there")
+    assert len(tab._sh_rows) == before + 1
+
+    _holder, key, combo = tab._sh_rows[-1]
+    assert key.text() == "f19"
+    assert "a script that is not there" in combo.currentText(), (
+        "the missing script's name was dropped from the row")
+    assert "missing" in combo.currentText().lower(), (
+        "a binding to a deleted script is not marked as missing, so it reads "
+        "as though it still works")
+    assert combo.currentText() != "— none —"
