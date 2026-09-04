@@ -939,3 +939,48 @@ def test_both_quit_paths_disarm_the_crash_reporter_and_save_state():
             f"{name} no longer ends the process; the reasoning above assumed "
             "it does, and the whole point of disarming here was that "
             "os._exit runs no atexit")
+
+
+def test_startup_harvests_before_it_arms_the_crash_reporter():
+    """⚠ Three calls in a `try/except: pass`, and their order is load-bearing.
+
+    `main()` does `harvest()`, then `install()`, then `install_qt_handler()`.
+    Nothing fails if any of them goes: crash capture simply stops existing, and
+    the only symptom is reports that never arrive — which is indistinguishable
+    from a version that did not crash. This project has already spent a release
+    reconstructing three bugs from the sentence "a ton of crashes" because there
+    was no capture; that is what it costs.
+
+    ⚠ The order is the subtle half. Harvesting is what turns *last* session's
+    abandoned session file into a report. Arming immediately writes a *new* one.
+    Arm first and the fresh file is there to be harvested, so a clean start
+    reports itself as a crash — or last session's real crash is overwritten
+    before anyone reads it. Both directions are wrong and neither raises.
+
+    `install_qt_handler` is separate on purpose: a `qFatal` calls `abort()` in
+    C, so no Python exception is ever raised, and that handler seeing the text
+    on the way past is the only record that exists. It is how 2.0.8's Stop crash
+    was identified at all.
+    """
+    import ast
+
+    with open(os.path.join(ROOT, "main.py"), encoding="utf-8") as fh:
+        tree = ast.parse(fh.read())
+
+    fn = next((n for n in ast.walk(tree)
+               if isinstance(n, ast.FunctionDef) and n.name == "main"), None)
+    assert fn is not None, "main() has moved"
+
+    order = [(n.lineno, ast.unparse(n.func)) for n in ast.walk(fn)
+             if isinstance(n, ast.Call)
+             and ast.unparse(n.func).startswith("crashreport.")]
+    names = [c for _, c in sorted(order)]
+
+    for wanted in ("crashreport.harvest", "crashreport.install",
+                   "crashreport.install_qt_handler"):
+        assert wanted in names, f"main() no longer calls {wanted}()"
+
+    assert names.index("crashreport.harvest") < names.index("crashreport.install"), (
+        "main() arms the crash reporter before harvesting. The session file "
+        "written by arming is then there to be harvested, so a clean start "
+        "reports itself as a crash — or last session's real one is lost.")
