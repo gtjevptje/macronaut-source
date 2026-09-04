@@ -2,8 +2,8 @@
 import json
 import shutil
 from pathlib import Path
-from dataclasses import dataclass, asdict, field
-from typing import Dict, List
+from dataclasses import dataclass, asdict, field, fields
+from typing import Dict, List, get_args, get_origin
 
 APP_DIR_NAME    = ".macronaut"
 LEGACY_DIR_NAME = ".autoclicker_pro"
@@ -273,12 +273,81 @@ def active() -> "Optional[SettingsManager]":
     return _ACTIVE
 
 
+_FIELD_TYPES = {f.name: f.type for f in fields(AppSettings)}
+
+
+def _coerce(key: str, value):
+    """(accept?, value) for one setting read off disk.
+
+    ⚠ Driven by `AppSettings`'s own annotations rather than a list kept beside
+    them — a hand-maintained copy of 72 field types would be wrong within a
+    month, and wrong in the direction of silently rejecting a good value.
+
+    Rejecting means "keep the default", never raise: one bad line in
+    settings.json must not stop the app opening, which is the same posture the
+    surrounding `except` has always taken for a corrupt file.
+    """
+    want = _FIELD_TYPES.get(key)
+    if want is None:
+        return False, None
+
+    # ⚠ bool before int, and bool excluded from int. In Python `True` *is* an
+    # int, so a plain isinstance check accepts `{"seq_speed": true}` as a
+    # number and `{"always_on_top": 1}` as a flag. Both then behave almost
+    # correctly, which is worse than either working or failing.
+    if want is bool:
+        if isinstance(value, bool):
+            return True, value
+        # 0 and 1 only. Somebody hand-editing a flag may well write `1`, and
+        # silently ignoring a plausible edit is worse than accepting it — but
+        # `2` or `"yes"` is a mistake, and taking it as True would hide one.
+        if isinstance(value, int) and value in (0, 1):
+            return True, bool(value)
+        return False, None
+    if want is int:
+        return (True, value) if isinstance(value, int) and not isinstance(value, bool) \
+            else (False, None)
+    if want is float:
+        return (True, float(value)) if isinstance(value, (int, float)) \
+            and not isinstance(value, bool) else (False, None)
+    if want is str:
+        return (True, value) if isinstance(value, str) else (False, None)
+
+    origin = get_origin(want)
+    if origin is list:
+        (inner,) = get_args(want) or (str,)
+        return (True, value) if isinstance(value, list) \
+            and all(isinstance(x, inner) for x in value) else (False, None)
+    if origin is dict:
+        kt, vt = get_args(want) or (str, str)
+        return (True, value) if isinstance(value, dict) \
+            and all(isinstance(a, kt) and isinstance(b, vt)
+                    for a, b in value.items()) else (False, None)
+    # An annotation this does not understand is not a reason to drop the value.
+    return True, value
+
+
 class SettingsManager:
     def __init__(self):
         self.s = AppSettings()
         self._load()
 
     def _load(self):
+        """Read settings.json, keeping the default for anything ill-typed.
+
+        ⚠ Unknown keys are ignored deliberately — that is what makes removing a
+        setting safe, and renaming one dangerous; see the note on `advanced_*`
+        in CLAUDE.md. What was *not* checked until 4 September 2026 was the
+        **type** of a known key. `{"seq_speed": "fast"}` in a hand-edited file
+        used to be stored as the string, and `{"script_hotkeys": "f13"}` as a
+        string where a dict is expected — both accepted here and then failing
+        somewhere else entirely, in a widget or a `.items()` call, with nothing
+        pointing back at the file.
+
+        People do edit this file: CLAUDE.md notes a hotkey collision is
+        something "a hand-edited settings.json can" create, so it is a real
+        path rather than a theoretical one.
+        """
         if not SETTINGS_FILE.exists():
             return
         try:
@@ -286,7 +355,9 @@ class SettingsManager:
                 data = json.load(f)
             for k, v in data.items():
                 if hasattr(self.s, k):
-                    setattr(self.s, k, v)
+                    ok, value = _coerce(k, v)
+                    if ok:
+                        setattr(self.s, k, value)
             # Migrate old dark_mode flag to a named theme.
             if "theme" not in data:
                 self.s.theme = DEFAULT_THEME if data.get("dark_mode", True) else "daylight"

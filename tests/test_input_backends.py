@@ -1014,3 +1014,76 @@ def test_the_input_struct_is_the_size_windows_expects(monkeypatch):
         "reject every call and report nothing")
     assert ctypes.sizeof(sb._INPUTunion) == ctypes.sizeof(sb.MOUSEINPUT), (
         "the union is not sized on MOUSEINPUT, its largest member")
+
+
+# ── settings: a hand-edited file with the wrong type ──────────────────────────
+
+def _settings_from(tmp_path, monkeypatch, payload):
+    import json
+    import settings as st
+    monkeypatch.setattr(st, "SETTINGS_DIR", tmp_path)
+    monkeypatch.setattr(st, "SETTINGS_FILE", tmp_path / "settings.json")
+    (tmp_path / "settings.json").write_text(json.dumps(payload), encoding="utf-8")
+    return st.SettingsManager().s
+
+
+def test_a_setting_of_the_wrong_type_keeps_its_default(tmp_path, monkeypatch):
+    """⚠ Unknown keys were ignored; wrong *types* on known keys were not.
+
+    `{"seq_speed": "fast"}` used to be stored as the string, and
+    `{"script_hotkeys": "f13"}` as a string where a dict is expected — both
+    accepted at load and then failing somewhere else entirely, in a widget or
+    a `.items()` call, with nothing pointing back at the file.
+
+    People do edit this file; CLAUDE.md notes a hotkey collision is something
+    "a hand-edited settings.json can" create.
+    """
+    s = _settings_from(tmp_path, monkeypatch,
+                       {"seq_speed": "fast", "script_hotkeys": "f13"})
+    assert s.seq_speed == 1.0, f"a string reached a float setting: {s.seq_speed!r}"
+    assert s.script_hotkeys == {}, (
+        f"a string reached a dict setting: {s.script_hotkeys!r}")
+
+    # A dict of the wrong shape is rejected too — the values must be names.
+    s2 = _settings_from(tmp_path, monkeypatch,
+                        {"script_hotkeys": {"f13": {"nested": 1}}})
+    assert s2.script_hotkeys == {}
+
+
+def test_a_number_is_not_a_flag_and_a_flag_is_not_a_number(tmp_path, monkeypatch):
+    """⚠ In Python `True` is an int, so a plain isinstance check accepts
+    `{"seq_speed": true}` as a number and `{"always_on_top": 1}` as a flag.
+
+    The first is nonsense and is refused. The second is a plausible hand-edit,
+    so 0 and 1 are accepted — silently ignoring a reasonable edit is worse than
+    taking it — while `2` or `"yes"` is a mistake and taking it as True would
+    hide one.
+    """
+    assert _settings_from(tmp_path, monkeypatch, {"seq_speed": True}).seq_speed == 1.0
+
+    assert _settings_from(tmp_path, monkeypatch,
+                          {"always_on_top": 1}).always_on_top is True
+    assert _settings_from(tmp_path, monkeypatch,
+                          {"always_on_top": 0}).always_on_top is False
+    assert _settings_from(tmp_path, monkeypatch,
+                          {"always_on_top": 2}).always_on_top is False
+    assert _settings_from(tmp_path, monkeypatch,
+                          {"always_on_top": "yes"}).always_on_top is False
+
+
+def test_good_settings_still_load(tmp_path, monkeypatch):
+    """⚠ The half that matters most. A guard on a read path is exactly the kind
+    that quietly rejects the values it was not written for, and every setting in
+    this app would then silently revert to its default."""
+    s = _settings_from(tmp_path, monkeypatch, {
+        "seq_speed": 2.5,
+        "always_on_top": True,
+        "script_hotkeys": {"f13": "beta", "f14": "gamma"},
+        "input_backend": "sendinput",
+    })
+    assert s.seq_speed == 2.5
+    assert s.always_on_top is True
+    assert s.script_hotkeys == {"f13": "beta", "f14": "gamma"}
+    assert s.input_backend == "sendinput"
+    # An int for a float field is fine and is stored as a float.
+    assert _settings_from(tmp_path, monkeypatch, {"seq_speed": 2}).seq_speed == 2.0
