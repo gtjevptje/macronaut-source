@@ -5039,3 +5039,49 @@ def test_shutting_down_releases_a_held_key(window):
         assert stuck.order == ["mouse", "keys"], stuck.order
     finally:
         flow_exec._HOLDERS.discard(stuck)
+
+
+def test_shutting_down_releases_both_global_keyboard_hooks(window):
+    """⚠ Two low-level Windows hooks, each released inside a `try/except: pass`.
+
+    `MainWindow` installs a global hotkey listener and a separate panic-key
+    listener, both on threads of their own, and both hold a real system-wide
+    keyboard hook. `_shutdown` stops them — silently, so if either call were
+    removed or started raising, nothing would report it.
+
+    The cost is documented in this project's own history: `hide()` alone leaves
+    the hooks installed, each test leaked a few more, and at roughly seventy
+    live hooks the suite died with a bare `Windows fatal exception: access
+    violation` inside pynput's message loop, naming no test. This fixture calls
+    `_shutdown()` for exactly that reason.
+
+    ⚠ It matters beyond the suite too. Both quit paths end in `os._exit(0)`
+    *because* an orphaned Macronaut holding a global hook is the failure worth
+    killing the process over — but `_shutdown` runs first, and it is what makes
+    the ordinary case clean rather than relying on the OS to tidy up.
+    """
+    class _FakeListener:
+        def __init__(self):
+            self.stopped = 0
+
+        def stop(self):
+            self.stopped += 1
+
+    hk, panic = _FakeListener(), _FakeListener()
+    window._hk_listener = hk
+    window._panic_listener = panic
+
+    window._shutdown()
+
+    assert hk.stopped, "_shutdown no longer stops the global hotkey listener"
+    assert panic.stopped, "_shutdown no longer stops the panic-key listener"
+
+    # ⚠ Idempotent means it declines to run twice, not that it releases twice.
+    # `_shutdown` returns early on `_shutting_down`, which matters because
+    # conftest calls it at teardown and both quit paths call it as well — and
+    # asking a stopped pynput listener to stop again is not obviously safe.
+    # The first draft of this test asserted a second release and failed; the
+    # guard is the correct design and the assertion was wrong.
+    window._shutdown()
+    assert hk.stopped == 1 and panic.stopped == 1, (
+        "_shutdown ran its teardown twice; the _shutting_down guard is gone")
