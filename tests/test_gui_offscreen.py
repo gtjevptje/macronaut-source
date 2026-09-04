@@ -4986,3 +4986,56 @@ def test_a_binding_whose_script_is_gone_stays_visible(window, monkeypatch,
         "a binding to a deleted script is not marked as missing, so it reads "
         "as though it still works")
     assert combo.currentText() != "— none —"
+
+
+def test_shutting_down_releases_a_held_key(window):
+    """⚠ The mechanism is tested; the *wiring* was not, and only the wiring
+    protects anybody.
+
+    `flow_exec.release_all_held()` has its own tests. What nothing checked is
+    that `_shutdown` still calls it — and that call sits inside a
+    `try/except: pass`, so if it were removed or started raising, every test
+    would stay green and the failure would be silent by construction.
+
+    What it costs when it goes wrong is the worst thing this app can do. Both
+    quit paths end in `os._exit(0)`, which runs no `atexit` and gives the
+    worker thread no chance to reach its own `finally`. A `W` held down by a
+    Hold-down node then outlives the process that pressed it: the user's
+    keyboard is stuck until they work out what happened, and a stuck *mouse
+    button* is worse still, because every click they try to fix it with becomes
+    part of a drag they never started.
+    """
+    import flow_exec
+
+    class _StuckWorker:
+        """Matches what `release_all_held` actually calls. ⚠ It guards every
+        call with `try/except: pass`, so a fake with the wrong signature is
+        silently skipped and the test fails looking like an app bug — which is
+        exactly what the first draft of this did."""
+
+        def __init__(self):
+            self._held = {"w": "node-1"}
+            self.order = []
+
+        def _release_mouse(self):
+            self.order.append("mouse")
+
+        def _release_keys(self, _node=None):
+            self._held = {}
+            self.order.append("keys")
+
+    stuck = _StuckWorker()
+    flow_exec._HOLDERS.add(stuck)
+    try:
+        window._shutdown()
+        assert stuck.order, (
+            "_shutdown no longer releases held input — a key held by a running "
+            "flow would outlive the app that pressed it")
+        assert stuck._held == {}
+        assert stuck not in flow_exec._HOLDERS
+        # ⚠ Mouse first, and deliberately so: a held button is what makes the
+        # desktop unusable rather than merely wrong, because every click the
+        # user tries to fix it with joins a drag they never started.
+        assert stuck.order == ["mouse", "keys"], stuck.order
+    finally:
+        flow_exec._HOLDERS.discard(stuck)
