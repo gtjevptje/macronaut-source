@@ -1,6 +1,21 @@
-Saving a flow can no longer destroy it.
+Your work is no longer lost by saving it, or by closing the window.
 
-**Saving is atomic now, and this is the reason for the release.** Until this
+**Closing Macronaut no longer throws away what is on the canvas.** This was the
+worse of the two, because you did not have to be unlucky to hit it — you just
+had to close the app. Build something for half an hour, close the window, and it
+was gone: no prompt, no autosave, nothing to reopen.
+
+Macronaut now keeps a private copy of the canvas as you work, and if you quit —
+or crash — with a flow that was never saved, it offers it back the next time you
+start. One question, Yes or No, and then it is done with: answering it retires
+the copy, and so does saving the flow yourself.
+
+It is deliberately quiet. You are not asked about a canvas that matches a script
+already saved on disk, so opening something from the Library, looking at it and
+quitting asks you nothing. And it is not a replacement for saving — it holds one
+flow, the last one you had open.
+
+**Saving is atomic now, and this is the other half of the same problem.** Until this
 version, saving opened your file and emptied it *before* writing anything back.
 If the write did not finish — a full disk, antivirus holding the file open, the
 machine going down, or a step containing something the save could not encode —

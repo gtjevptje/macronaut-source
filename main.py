@@ -3,6 +3,7 @@ Macronaut — main window, tabs, hotkey listener, and application bootstrap.
 """
 import sys
 import time
+import json
 import threading
 import collections
 from pathlib import Path
@@ -256,6 +257,7 @@ import entitlements
 import starters
 
 import flow
+import recovery
 import flow_exec
 import flow_timeline
 import runstats
@@ -3337,6 +3339,46 @@ class SequenceTab(QWidget):
         self._recorder.recording_stopped.connect(self._on_recording_stopped)
         self._setup_ui()
 
+        # ── Unsaved-work recovery ──────────────────────────────────
+        #
+        # The canvas used to be discarded on close; `recovery.py` explains the
+        # whole thing. The timer is the half that survives a crash, since
+        # `closeEvent` does not run then.
+        #
+        # ⚠ Twenty seconds, and the write is skipped when the serialised graph
+        # is byte-identical to the last one — which, while nobody is editing,
+        # is every single tick. The cost of an idle app is therefore one
+        # `to_dict()` and one string compare per 20 s, not a file write.
+        self._recovery_blob: Optional[str] = None
+        self._recovery_timer = QTimer(self)
+        self._recovery_timer.setInterval(20_000)
+        self._recovery_timer.timeout.connect(self._write_recovery)
+        self._recovery_timer.start()
+
+    def _write_recovery(self, force: bool = False):
+        """Keep the recovery copy current. Never raises — see `recovery.py`.
+
+        `force` is for the close path, where the timer may be up to twenty
+        seconds stale and there is no next tick coming.
+        """
+        try:
+            blob = json.dumps(self._graph.to_dict(), sort_keys=True)
+        except Exception:
+            return
+        if blob == self._recovery_blob and not force:
+            return
+        if recovery.write(self._graph, self._settings.s.last_sequence_path):
+            self._recovery_blob = blob
+
+    def _forget_recovery(self):
+        """Called once the flow on disk *is* the work — after a successful Save.
+
+        Also resets the cached blob, so the next edit writes a fresh recovery
+        copy instead of being mistaken for "nothing changed since last time".
+        """
+        recovery.clear()
+        self._recovery_blob = None
+
     @staticmethod
     def _new_graph() -> "flow.FlowGraph":
         g = flow.FlowGraph()
@@ -4175,6 +4217,11 @@ class SequenceTab(QWidget):
                 # Saving under a name is what gives this flow its own bucket of
                 # measurements; until then it shares the unsaved one.
                 self._set_stats_key(Path(path).stem)
+                # The work is on disk under a name the user chose, so there is
+                # nothing left to recover and the offer must not appear next
+                # launch. This is half of the "when does it stop offering"
+                # rule; the other half is answering the dialog.
+                self._forget_recovery()
             except Exception as e:
                 # ⚠ Say that nothing was lost, because since 4 September 2026
                 # that is true and it is the only thing the person in front of
@@ -5295,6 +5342,52 @@ class MainWindow(QMainWindow):
         # for the network, and it asks nothing of someone who has never crashed.
         crash_ui.schedule(self, self._settings)
 
+        # Unsaved work from a session that closed or crashed with a flow on the
+        # canvas. First of the three startup questions on purpose: it is about
+        # something the user made and might be missing right now, whereas an
+        # update and a crash report can both wait. Zero delay so it is answered
+        # and gone before the update check four seconds later can stack a second
+        # box on top of it.
+        QTimer.singleShot(0, self._offer_recovery)
+
+    def _offer_recovery(self):
+        """Offer back a canvas that was never saved. See `recovery.py`.
+
+        ⚠ The file is deleted whichever button is pressed, and also when there
+        is nothing worth offering. A recovery copy that outlives its own
+        question comes back on the next launch as a flow the user has already
+        said no to, and the second time they will stop reading the box.
+        """
+        try:
+            payload = recovery.read()
+            graph = recovery.offerable(payload)
+            if graph is None:
+                if payload is not None:
+                    recovery.clear()
+                return
+            r = QMessageBox.question(
+                self, "Unsaved flow",
+                "Macronaut closed with a flow on the canvas that was never "
+                f"saved.\n\n{recovery.describe(payload)}\n\nOpen it again?",
+                QMessageBox.Yes | QMessageBox.No)
+            if r == QMessageBox.Yes:
+                self._sequence_tab._graph = graph
+                self._sequence_tab._canvas.set_graph(graph)
+                self._refresh_basic_face()
+                self._sequence_tab._canvas.fit()
+        except Exception:
+            # A safety net is not allowed to be the thing that breaks startup.
+            pass
+        finally:
+            # ⚠ Inside `finally` so an exception mid-restore still retires the
+            # file. The alternative is a payload that failed to load once
+            # asking the same question at every launch from now on.
+            try:
+                recovery.clear()
+                self._sequence_tab._recovery_blob = None
+            except Exception:
+                pass
+
     def _on_crash_reports_sent(self, sent: int, remaining: int):
         """An upload finished. Queued onto this thread — see _start_upload.
 
@@ -6178,6 +6271,15 @@ class MainWindow(QMainWindow):
         self._sequence_tab.save_to_settings()
         self._settings_tab.save_to_settings()
         self._settings.save()
+        # ⚠ Last, and inside its own guard. Both quit paths run this, and both
+        # end in `_os._exit(0)` — an exception escaping here would lose the
+        # geometry and settings that were just written, to protect a canvas
+        # nobody had asked to keep. `recovery.write` swallows its own errors
+        # too; this is the belt to that pair of braces.
+        try:
+            self._sequence_tab._write_recovery(force=True)
+        except Exception:
+            pass
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
