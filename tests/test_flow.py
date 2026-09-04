@@ -2146,3 +2146,51 @@ def test_a_hand_edited_flow_that_is_wrong_says_where_to_look(tmp_path):
         p = tmp_path / "future.json"
         p.write_text(_json.dumps(payload), encoding="utf-8")
         assert flow.FlowGraph.load(str(p)).nodes, "a forward-compatible flow was refused"
+
+
+def test_a_locked_destination_does_not_empty_the_flow(tmp_path):
+    """⚠ The realistic Windows failure, and the old code lost everything to it.
+
+    A file can be locked by antivirus mid-scan, by a sync client, or by an
+    editor somebody left open. Measured on 4 September 2026 with a byte-range
+    lock held on the destination:
+
+        old: `open(path, "w")` truncated the file to **0 bytes** and *then*
+             raised PermissionError. 35 bytes of flow gone, and the error says
+             "Permission denied", which reads as though nothing happened.
+
+    Truncation is part of opening for write, so the exception arrives after the
+    damage. That is the worst possible ordering: it looks like a refusal and it
+    is a deletion.
+
+    The atomic save cannot hit it — the temporary file is a new name nobody
+    holds, and only `os.replace` touches the target.
+    """
+    import msvcrt
+    import flow
+
+    good = flow.FlowGraph()
+    good.add_node(flow.N_ACTION, {"step": {"kind": "wait", "data": {"ms": 111}}})
+    target = tmp_path / "locked.json"
+    good.save(str(target))
+    original = target.read_bytes()
+    assert original, "nothing was saved, so this test proves nothing"
+
+    newer = flow.FlowGraph()
+    newer.add_node(flow.N_ACTION, {"step": {"kind": "wait", "data": {"ms": 999}}})
+
+    holder = open(target, "r+b")
+    msvcrt.locking(holder.fileno(), msvcrt.LK_NBLCK, 1)
+    try:
+        with pytest.raises(OSError):
+            newer.save(str(target))
+    finally:
+        msvcrt.locking(holder.fileno(), msvcrt.LK_UNLCK, 1)
+        holder.close()
+
+    assert target.read_bytes() == original, (
+        "a locked destination emptied the flow — this is the failure the "
+        "atomic save exists for")
+    assert not [p for p in tmp_path.iterdir() if p.name.startswith(".flow-")], \
+        "a temporary file was left behind"
+    assert len(flow.FlowGraph.load(str(target)).nodes) == len(good.nodes)

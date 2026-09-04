@@ -5,8 +5,12 @@ version, saving opened your file and emptied it *before* writing anything back.
 If the write did not finish — a full disk, antivirus holding the file open, the
 machine going down, or a step containing something the save could not encode —
 you were left with a half-written file and no original to fall back on. It is
-not a theoretical failure: reproduced here, an interrupted save turned a working
-flow into a fragment that would not reload.
+not a theoretical failure. Two of them were reproduced here. A save interrupted
+part-way turned a working flow into a fragment that would not reload; and when
+the file was simply *locked* — which is what antivirus does while it scans, and
+what a sync client or an open editor does — the old save emptied it to nothing
+and **then** reported "Permission denied", which reads as though it had refused
+and changed nothing.
 
 Macronaut now writes the new version alongside the old one and swaps them in a
 single step. If anything goes wrong, the flow you already had is exactly where
