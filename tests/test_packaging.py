@@ -1051,6 +1051,75 @@ def test_no_document_hardcodes_an_exact_test_count():
         + "\nSay 'about 800' or give the command instead.")
 
 
+def test_every_image_the_readme_shows_actually_reaches_the_public_repo():
+    """⚠ A broken image on the one page search engines rank.
+
+    Until 4 September 2026 the README carried no image at all — a repository
+    for a *visual* node editor where you could not see the node editor, on the
+    page measured as ranking first for "Macronaut auto clicker" while the site
+    did not appear at all. The screenshots existed; they were in `site/assets/`,
+    which is **gitignored**, so pointing at them from the README would have
+    rendered a broken-image icon for every visitor and looked perfect here.
+
+    Three conditions, and only the first is obvious: the file has to exist, it
+    has to be *tracked* (the mirror publishes `git ls-files`), and it must not
+    be on `publish_source.PRIVATE`. Miss either of the last two and the image
+    is fine locally and missing in public — which is the only place it matters.
+    """
+    import ast
+    import subprocess
+
+    readme = _read("README.md")
+    refs = set(re.findall(r'<img[^>]+src="([^"]+)"', readme))
+    refs |= set(re.findall(r"!\[[^\]]*\]\(([^)]+)\)", readme))
+    local = sorted(r for r in refs if not r.startswith(("http://", "https://")))
+    assert local, "the README shows no local image — see the docstring above"
+
+    tracked = set(subprocess.run(["git", "ls-files"], cwd=ROOT, check=True,
+                                 capture_output=True, text=True
+                                 ).stdout.splitlines())
+
+    # ⚠ PRIVATE is read with `ast`, never by importing the module.
+    #
+    # The first version of this test did `import publish_source`, which looks
+    # harmless and cost an hour: that module reconfigures `sys.stdout` and
+    # `sys.stderr` at import time (a Windows console hands it cp1252 and a ✓
+    # would raise). Inside pytest those are the *capture* objects, so importing
+    # it reconfigured the test runner's own plumbing — the full suite produced
+    # no output at all and hung, while this test on its own passed in 0.3 s.
+    # A publishing tool is a program, not a library; read it, do not run it.
+    private = ()
+    tool = os.path.join(ROOT, "tools", "publish_source.py")
+    if os.path.isfile(tool):                # absent in a public clone
+        with open(tool, encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Assign)
+                    and any(getattr(t, "id", "") == "PRIVATE"
+                            for t in node.targets)):
+                private = tuple(e.value for e in node.value.elts
+                                if isinstance(e, ast.Constant)
+                                and isinstance(e.value, str))
+        assert private, "could not read PRIVATE out of publish_source.py"
+
+    problems = []
+    for ref in local:
+        path = os.path.join(ROOT, ref.replace("/", os.sep))
+        if not os.path.isfile(path):
+            problems.append(f"{ref} — no such file")
+            continue
+        if ref not in tracked:
+            problems.append(f"{ref} — exists but is not tracked by git, so the "
+                            "public repo will not have it (is it gitignored?)")
+            continue
+        if any(ref == p or ref.startswith(p) for p in private):
+            problems.append(f"{ref} — tracked, but held back by "
+                            "publish_source.PRIVATE")
+
+    assert not problems, ("the README points at images the public repo will not "
+                          "have:\n  " + "\n  ".join(problems))
+
+
 def test_no_document_states_a_file_size_that_is_no_longer_true():
     """The same rot as the test count, in the one place it does real damage.
 

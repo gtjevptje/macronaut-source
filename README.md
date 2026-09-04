@@ -7,6 +7,14 @@
 [![Platform: Windows](https://img.shields.io/badge/platform-Windows%2010%20%2F%2011-4f46e5)](#installation)
 [![Download](https://img.shields.io/badge/download-Macronaut.exe-22c55e)](https://github.com/gtjevptje/Macronaut/releases/latest/download/Macronaut.exe)
 
+<p align="center">
+  <img src="docs/hero.png" width="860"
+       alt="Macronaut's node canvas: a Start node wired through Loop, Click, Type, Detect, If/Else and Wait steps, with a palette of node types down the left and Record and Play buttons at the top.">
+</p>
+
+<p align="center"><em>Every step is a box. Drag a port onto another box to wire
+them together — that is the whole language.</em></p>
+
 A Windows autoclicker and input-automation app built with Python and PySide6 (Qt 6).
 The **Sequence** tab is the centrepiece — a friendly builder for recording and
 hand-crafting multi-step automations — backed by a classic single-point
@@ -42,6 +50,14 @@ To run from source instead, see [Installation](#installation) below.
 ---
 
 ## Features
+
+<p align="center">
+  <img src="docs/basic.png" width="420"
+       alt="Macronaut's Basic face: click interval in hours, minutes, seconds and milliseconds, a left/right button choice, click at the cursor or a fixed spot, repeat until stopped or a set number of times, and a green Start button.">
+</p>
+
+<p align="center"><em>The canvas is behind an <strong>Advanced</strong> link.
+This is what opens if all you wanted was an auto clicker.</em></p>
 
 ### Basic clicking
 - Left, right, or middle mouse button
