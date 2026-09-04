@@ -8,6 +8,7 @@ to the UI via Qt signals.
 
 Detection / input logic is shared with the legacy linear player in recorder.py.
 """
+import os
 import time
 import ctypes
 import inspect
@@ -794,6 +795,29 @@ class FlowWorker(QObject):
         from PIL import ImageGrab
         return ImageGrab.grab(all_screens=True).convert("RGB")
 
+    def _warn_missing_template(self, image_path: str) -> None:
+        """Put one line in the run log when a template file is not on disk.
+
+        ⚠ Goes through the interpreter's own `on_log`, the same channel the
+        backend and error lines at the top of `run()` use — the worker has no
+        logger of its own, and inventing one here would be a second way to say
+        the same thing.
+
+        Never raises: this is a diagnostic, and a step must not fail because
+        the note about it could not be written.
+        """
+        try:
+            if not image_path or os.path.exists(image_path):
+                return
+            interp = getattr(self, "_interp", None)
+            on_log = getattr(interp, "on_log", None)
+            if on_log:
+                on_log({"t": time.time(), "kind": "error",
+                        "msg": f"image file not found: {image_path} — this step "
+                               "cannot match anything until it is back"})
+        except Exception:
+            pass
+
     def _do_wait_image(self, d: dict, variables) -> bool:
         if not _PYAUTOGUI:
             return True
@@ -804,6 +828,22 @@ class FlowWorker(QObject):
         do_click   = d.get("click", False)
         region_logical = d.get("region")
         deadline = (time.monotonic() + timeout_s) if timeout_s > 0 else None
+
+        # ⚠ Say so once, up front, if the template file is not there.
+        #
+        # Every matcher path degrades to "not found" rather than raising — a
+        # missing file, a file that is not an image, a zero-byte one — which is
+        # the right behaviour for a step that is *supposed* to tolerate not
+        # finding things. The cost is that it makes a moved or deleted image
+        # indistinguishable from "the thing is not on screen": the step waits
+        # out its whole timeout and takes the not-found branch, exactly as it
+        # would if the flow were working. Somebody who reorganised a folder
+        # then has a flow that quietly stopped working and a run log that
+        # blames the screen.
+        #
+        # One line, before the loop, so it cannot become a per-poll flood.
+        self._warn_missing_template(image_path)
+
         while self._running:
             try:
                 shot = self._grab()

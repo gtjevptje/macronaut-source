@@ -2194,3 +2194,51 @@ def test_a_locked_destination_does_not_empty_the_flow(tmp_path):
     assert not [p for p in tmp_path.iterdir() if p.name.startswith(".flow-")], \
         "a temporary file was left behind"
     assert len(flow.FlowGraph.load(str(target)).nodes) == len(good.nodes)
+
+
+def test_a_missing_template_image_says_so_in_the_run_log(tmp_path):
+    """⚠ A moved image and "the thing is not on screen" looked identical.
+
+    Every matcher path degrades to *not found* rather than raising — a missing
+    file, a file that is not an image, a zero-byte one; measured, all five
+    return None. That is right for a step whose whole job is tolerating not
+    finding things, and it is exactly what makes a deleted template invisible:
+    the step waits out its full timeout and takes the not-found branch, which
+    is what it would do if the flow were working perfectly.
+
+    So somebody who reorganised a folder has a flow that quietly stopped
+    working and a run log blaming the screen. One line, before the polling
+    loop, so it cannot become a per-poll flood.
+
+    ⚠ Never raises. It is a diagnostic; a step must not fail because the note
+    about it could not be written.
+    """
+    import flow_exec
+
+    seen = []
+
+    class _Interp:
+        def on_log(self, ev):
+            seen.append(ev)
+
+    w = flow_exec.FlowWorker.__new__(flow_exec.FlowWorker)
+    w._interp = _Interp()
+
+    present = tmp_path / "there.png"
+    present.write_bytes(b"not really a png, but it exists")
+
+    w._warn_missing_template(str(tmp_path / "gone.png"))
+    assert len(seen) == 1, "a missing template produced no log line"
+    assert seen[0]["kind"] == "error"
+    assert "gone.png" in seen[0]["msg"], "the message does not name the file"
+    assert "not found" in seen[0]["msg"].lower()
+
+    # A file that exists says nothing, and neither does a step with no image.
+    w._warn_missing_template(str(present))
+    w._warn_missing_template("")
+    assert len(seen) == 1, "it logged about a template that is present"
+
+    # ⚠ And it survives having no interpreter at all — a worker built for a
+    # detached launcher run reaches this before `run()` has wired one up.
+    bare = flow_exec.FlowWorker.__new__(flow_exec.FlowWorker)
+    bare._warn_missing_template(str(tmp_path / "also-gone.png"))
