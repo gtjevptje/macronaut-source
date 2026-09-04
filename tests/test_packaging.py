@@ -984,3 +984,68 @@ def test_startup_harvests_before_it_arms_the_crash_reporter():
         "main() arms the crash reporter before harvesting. The session file "
         "written by arming is then there to be harvested, so a clean start "
         "reports itself as a crash — or last session's real one is lost.")
+
+
+def test_no_document_hardcodes_an_exact_test_count():
+    """⚠ Three documents claimed a count the suite had long since passed.
+
+    `CLAUDE.md`'s Commands table said "745 pass" and `CONTRIBUTING.md` said
+    "748 tests" while the suite was over 800. The second is published, so a
+    contributor runs it, sees a different number and reasonably wonders what
+    they broke — a stale figure is worse than no figure.
+
+    The general rule, arrived at three separate ways on 4 September 2026: a
+    claim that has to be maintained by hand will eventually be false, so either
+    derive it (the privacy policy's date comes from git), state it durably
+    ("the three gates", not "this build"), or hand the reader the command (the
+    SignPath draft carries the four that regenerate its numbers).
+
+    ⚠ Vague phrasings are the point and are exempt: "800-odd", "upwards of",
+    "about", "~800". So are past-tense mentions, because the sentence in
+    CONTRIBUTING explaining *why* the number is absent necessarily contains
+    one — the same trap as the `<table>` inside the CSS comment that this
+    suite's own table check had to learn about.
+
+    The SignPath application is deliberately not scanned: it is unpublished,
+    an application to a code-signing authority should carry the real figure,
+    and it already carries the command to refresh it.
+    """
+    import re
+
+    exact = re.compile(r"(?<![-~])\b(\d{3,4})\s+(tests?|pass(?:ing)?)\b", re.I)
+    vague = ("-odd", "upwards", "about ", "roughly", "~", "approximately")
+    past = ("said", "used to", "for a while", "grown past", "deliberately",
+            "had ")
+
+    offenders = []
+    for name in ("README.md", "CONTRIBUTING.md", "SECURITY.md", "CLAUDE.md"):
+        path = os.path.join(ROOT, name)
+        if not os.path.isfile(path):
+            continue
+        with open(path, encoding="utf-8") as fh:
+            for i, line in enumerate(fh, 1):
+                if not exact.search(line):
+                    continue
+                low = line.lower()
+                # ⚠ A past-tense marker exempts the whole line; vagueness must
+                # attach to the NUMBER. "748 tests, about 35 seconds" is exact
+                # about the count and vague about the duration — and it is the
+                # very line this test was written for. Checking `about` against
+                # the whole line exempted it, so the first version of this
+                # check caught neither of the two offenders it came from.
+                if any(w in low for w in past):
+                    continue
+                clean = True
+                for m in exact.finditer(line):
+                    before = low[max(0, m.start() - 14):m.start()]
+                    after = low[m.end():m.end() + 5]
+                    if any(w in before for w in vague) or after.startswith("-odd"):
+                        continue
+                    clean = False
+                if not clean:
+                    offenders.append(f"  {name}:{i}  {line.strip()[:70]}")
+
+    assert not offenders, (
+        "these state an exact test count, which goes stale the next time "
+        "anybody adds a test:\n" + "\n".join(offenders)
+        + "\nSay 'about 800' or give the command instead.")
