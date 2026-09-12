@@ -240,3 +240,60 @@ def test_hand_maintained_pages_call_a_script_a_script(page):
         + "This page is copied verbatim by build_site.py, so no rename "
           "reaches it on its own."
     )
+
+
+def test_the_recorded_repo_descriptions_use_the_word():
+    """The GitHub repo description is published, and no test can see it.
+
+    ⚠ It lives in GitHub's settings, not in this tree: the first line anyone
+    reads on either public repo, shown in GitHub search and on the social card,
+    and nothing in this repository generates it. The rename reached the app, the
+    docs and every rendered page on 12 September 2026 and left both descriptions
+    carrying the retired word. They were found by asking the GitHub API.
+
+    What this can guard is the *recorded* text in BRAND-macronaut.md, which is
+    what a future rename will copy from. The live value still has to be pushed by
+    hand, and that is written down beside the text.
+
+    Only the blockquote lines are scanned. The prose around them has to be able
+    to name the retired word in order to explain the rule at all, and widening
+    DOC_ALLOWED to permit that would weaken every other check that uses it.
+    """
+    path = os.path.join(REPO, "BRAND-macronaut.md")
+    if not os.path.exists(path):
+        pytest.skip("BRAND-macronaut.md is not in this tree (it is withheld)")
+
+    with open(path, "rb") as fh:
+        lines = fh.read().decode("utf-8").splitlines()
+
+    section = []
+    inside = False
+    for line in lines:
+        if line.startswith("## "):
+            inside = line.strip() == "## Canonical published metadata"
+            continue
+        if inside and line.startswith("> "):
+            section.append(line)
+
+    assert section, (
+        "BRAND-macronaut.md has no quoted repo descriptions under "
+        "'## Canonical published metadata' - either the section was renamed "
+        "or the text was unquoted, and this test silently stopped checking "
+        "anything.")
+
+    offenders = []
+    for line in section:
+        if any(ok in line for ok in DOC_ALLOWED):
+            continue
+        found = RETIRED.search(line)
+        if found:
+            offenders.append("%r in %r" % (found.group(0), line.strip()[:90]))
+
+    assert not offenders, (
+        "The recorded GitHub repo description still calls a script "
+        "something else:"
+        + _NL + "  " + (_NL + "  ").join(offenders)
+        + _NL + _NL
+        + "Fix it here, then push the live value: "
+          "gh api -X PATCH repos/gtjevptje/<repo> -f description=..."
+    )
