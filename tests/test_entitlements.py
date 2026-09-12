@@ -1001,6 +1001,73 @@ def test_the_page_says_nothing_rather_than_publishing_a_wrong_checksum(monkeypat
 
 
 @needs_site
+def test_the_published_size_comes_from_the_release_not_a_local_build(monkeypatch):
+    """The size on the page describes the file people download, not ours.
+
+    ⚠ The test above says at length why the *checksum* must never come from a
+    local build. Until 12 September 2026 the *size* did — `_exe_size_mb()` read
+    `dist/Macronaut.exe` off disk — so one page described one file from two
+    sources, and only one of them had the argument attached to it.
+
+    They agreed by luck rather than by design: a local build 23,587 bytes
+    larger than the released 2.3.4 still rounds to 78. Drift past the half
+    megabyte and the page would have announced "79 MB" beside the released
+    file's own checksum — which that function's docstring calls a small lie a
+    visitor can check in two seconds.
+    """
+    bs = _build_site_module()
+    import version
+
+    # The manifest wins even when the local build disagrees.
+    bs._MANIFEST_CACHE["data"] = {"version": version.__version__,
+                                  "size": 79_400_000, "sha256": "a" * 64}
+    assert bs._exe_size_mb() == 79, (
+        "the published size no longer follows the released manifest")
+
+    # A size from another release is as wrong as a hash from one.
+    bs._MANIFEST_CACHE["data"] = {"version": "9.9.9", "size": 79_400_000}
+    assert bs._exe_size_mb() != 79, (
+        "a manifest for a different version was used for this version's size")
+
+    # Nothing to go on: fall back rather than invent, and never return 0.
+    bs._MANIFEST_CACHE["data"] = {}
+    fallback = bs._exe_size_mb()
+    assert isinstance(fallback, int) and fallback > 0, fallback
+
+
+@needs_site
+def test_the_release_manifest_is_fetched_once_per_build(monkeypatch):
+    """Two callers, one question, one request.
+
+    Not a performance point — it is that the checksum and the size must be
+    able to disagree only if the release itself changed mid-build, which is
+    not a thing that should be possible to arrange.
+    """
+    bs = _build_site_module()
+    calls = []
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            calls.append(1)
+            return b'{"version": "0.0.0", "size": 1, "sha256": "b"}'
+
+    import urllib.request
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: _Resp())
+    bs._MANIFEST_CACHE.clear()
+
+    bs._released_manifest()
+    bs._released_manifest()
+    bs._exe_size_mb()
+    assert len(calls) == 1, f"the manifest was fetched {len(calls)} times"
+
+
+@needs_site
 def test_the_domain_root_serves_a_sitemap_too():
     """⚠ Search Console resolves a submitted sitemap path against the PROPERTY.
 

@@ -697,7 +697,7 @@ class BulkEditDialog(QDialog):
         self._conf = _dspin(0.10, 1.00, 0.85, 0.01, "", w=110)
         grid.addWidget(self._c_conf, r, 0)
         grid.addWidget(self._conf, r, 2)
-        grid.addWidget(self._hint("Lower it when a flow stops matching on a "
+        grid.addWidget(self._hint("Lower it when a script stops matching on a "
                                   "different screen or resolution."), r + 1, 1, 1, 3)
         r += 2
 

@@ -135,6 +135,21 @@ class AppSettings:
     # part of producing the character and there is nothing to choose.
     type_shift_for_capitals: bool = False
 
+    # ── Pointer travel ───────────────────────────────────────────────
+    # Whether the cursor GLIDES to a click's target or is teleported there in
+    # one assignment. On by default, and the default is the point: a receiver
+    # that samples the pointer once a frame reads a teleport as a cursor that
+    # was never on the way, so hover states never fire and menus that open on
+    # mouse-enter are not open when the click lands. See flow.travel_path.
+    smooth_mouse: bool = True
+    # Pixels per second. Clamped by flow.travel_pps, and the glide is floored
+    # and capped in *time* as well, so neither a nudge nor a 4K diagonal turns
+    # into something silly.
+    mouse_travel_pps: int = 3000
+    # Bow the path slightly and add a pixel of tremor. Follows the same
+    # human_mode the auto-clicker's jitter does rather than being a switch of
+    # its own — "move like a hand" is one preference, not two.
+
     # ── Updates ──────────────────────────────────────────────────────
     auto_check_updates: bool = True       # check on startup (never auto-applies)
     auto_download_updates: bool = True    # stage the download once one is found

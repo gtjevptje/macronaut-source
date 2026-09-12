@@ -26,6 +26,11 @@ import sys
 import pytest
 from PySide6.QtCore import QPoint, QRect, Qt
 
+import recovery as _recovery
+# Captured before `_no_recovery_prompt` below replaces it, so the one test
+# that proves the mechanism can opt back in to the real thing.
+_REAL_RECOVERY_READ = _recovery.read
+
 
 def code_only(src: str) -> str:
     """Strip whole-line comments before searching source for a forbidden name.
@@ -41,6 +46,55 @@ def code_only(src: str) -> str:
     """
     return "\n".join(ln for ln in src.splitlines()
                      if not ln.strip().startswith("#"))
+
+
+@pytest.fixture(autouse=True)
+def _no_recovery_prompt():
+    """⚠ Stop the suite hanging on a modal nobody can click.
+
+    THE flake this file has been blamed for. Diagnosed 9 September 2026 with
+    `-o faulthandler_timeout=45`, which finally caught it:
+
+        Timeout (0:00:45)!
+        Thread 0x00005628 (most recent call first):
+          File "main.py", line 5564 in _offer_recovery
+          File "tests/test_gui_offscreen.py", line 4384 in
+              test_the_library_buttons_fit_at_the_dialogs_own_minimum_width
+
+    `MainWindow.__init__` does `QTimer.singleShot(0, self._offer_recovery)`,
+    and `_offer_recovery` raises a **modal** `QMessageBox.question` when there
+    is a recovery payload to offer. Offscreen, nobody can answer it, so the run
+    stops dead — no failure, no test name, just a process that never exits.
+
+    ⚠ And the payload is written by the suite itself, which is why it looked
+    random. Every `SequenceTab` starts a 20-second `QTimer` that writes one
+    (`_write_recovery`). This file's run is longer than twenty seconds, so a
+    timer fires part-way through, and the next `MainWindow` built after that
+    finds a payload and asks about it. Whether that happens depends on how far
+    the run gets in twenty seconds — "roughly one run in two", and reliably
+    once the file grew past it.
+
+    ⚠ It is NOT the two causes previously measured and recorded (stray
+    processes holding pynput hooks; parentless dialogs being garbage
+    collected). Those were tried and neither fixed it, which is exactly what
+    you would expect of a modal in a different mechanism entirely.
+
+    `read` rather than `write`: the app's own behaviour is left alone, the
+    offer simply finds nothing. `tests/test_recovery.py` owns this feature and
+    drives `_offer_recovery()` directly with `QMessageBox.question` stubbed, so
+    nothing here is the only cover for it.
+    """
+    import recovery
+    real_read = recovery.read
+    recovery.read = lambda *a, **kw: None
+    try:
+        yield
+    finally:
+        recovery.read = real_read
+        try:
+            recovery.clear()
+        except Exception:
+            pass
 
 
 @pytest.fixture(scope="module")
@@ -4531,7 +4585,7 @@ def test_every_node_the_engine_runs_can_be_created_from_the_palette(window, no_e
 def _update_info(**kw):
     import updater
     fields = dict(version="9.9.9", url="https://example.invalid/Macronaut.exe",
-                  sha256="0" * 64, size=1234, notes="", mandatory=False)
+                  sha256="0" * 64, size=1234, notes="")
     fields.update(kw)
     return updater.UpdateInfo(**fields)
 
@@ -5085,3 +5139,509 @@ def test_shutting_down_releases_both_global_keyboard_hooks(window):
     window._shutdown()
     assert hk.stopped == 1 and panic.stopped == 1, (
         "_shutdown ran its teardown twice; the _shutting_down guard is gone")
+
+
+def test_the_panic_hotkey_is_actually_bound(window):
+    """The failsafe binds the key it is configured with, and nothing else.
+
+    ⚠ `scratchpad/mutation_audit.py` replaced the binding call in
+    `_refresh_panic` with `set_hotkeys([])` — the always-on abort key binding
+    nothing at all — and the whole suite stayed green (12 September 2026). It
+    was the only mutation of seventeen to survive that run.
+
+    The cost of that hole is not a wrong pixel. `settings.panic_hotkey`
+    defaults to Esc and its own UI calls it "a panic key that always aborts
+    automation"; it is the thing a person reaches for when a script is typing
+    into the wrong window. A failsafe that silently binds nothing looks
+    identical to one that works, right up to the moment it is needed, and
+    there is no other moment at which anyone would find out.
+
+    Three assertions rather than one, because "binds something" is not the
+    claim: it has to bind *the configured key*, follow a change to it, and
+    unbind when the feature is switched off — an abort key that stays live
+    after being disabled is its own surprise.
+    """
+    class _FakeListener:
+        """Records what it was asked to watch. `stop` exists for teardown."""
+
+        def __init__(self):
+            self.bound = None
+
+        def set_hotkeys(self, keys):
+            self.bound = list(keys)
+
+        def stop(self):
+            pass
+
+    fake = _FakeListener()
+    window._panic_listener = fake
+    s = window._settings.s
+    # ⚠ Restored below. The settings file is sandboxed by conftest, but
+    # leaving the panic key switched off for whatever runs next is the
+    # kind of cross-test coupling that gets blamed on the wrong test.
+    was = (getattr(s, "panic_enabled", True), getattr(s, "panic_hotkey", "esc"))
+    try:
+        s.panic_enabled = True
+        s.panic_hotkey = "f9"
+        window._refresh_panic()
+        assert fake.bound == ["f9"], (
+            "the panic hotkey was not bound to the configured key; "
+            f"the listener was asked to watch {fake.bound!r}")
+
+        # A change to the key has to reach the listener, not just the settings.
+        s.panic_hotkey = "esc"
+        window._refresh_panic()
+        assert fake.bound == ["esc"], (
+            "changing panic_hotkey no longer rebinds the listener; "
+            f"it is still watching {fake.bound!r}")
+
+        # And off means off.
+        s.panic_enabled = False
+        window._refresh_panic()
+        assert fake.bound == [], (
+            "the panic hotkey stayed bound after being disabled; "
+            f"the listener is watching {fake.bound!r}")
+    finally:
+        s.panic_enabled, s.panic_hotkey = was
+
+
+def test_a_freshly_built_window_has_the_panic_key_bound(window):
+    """The startup call, as opposed to what the function does when called.
+
+    ⚠ Two separate ways for the failsafe to be dead, and the test above only
+    covers one. `_refresh_panic` can bind correctly and still never run: it is
+    called once during `MainWindow.__init__` and again from the settings tab's
+    `failsafe_changed` signal, and deleting either line leaves a window whose
+    panic key was never armed.
+
+    So this asks the real listener what it is watching, on a window nobody has
+    touched. `HotkeyListener.set_hotkeys` normalises and stores its argument in
+    `_hotkeys`, which is the only place the answer exists without pressing a
+    key in a GUI test.
+    """
+    s = window._settings.s
+    assert getattr(s, "panic_enabled", True), (
+        "the shipped default no longer enables the panic key — if that is "
+        "deliberate, this test is the wrong shape, not the settings")
+    expected = (getattr(s, "panic_hotkey", "") or "").lower().strip()
+    assert expected, "the shipped default no longer defines a panic key"
+
+    assert window._panic_listener._hotkeys == [expected], (
+        "a freshly constructed window is not watching the panic key. "
+        f"Expected [{expected!r}], the listener has "
+        f"{window._panic_listener._hotkeys!r}. Either __init__ stopped "
+        "calling _refresh_panic, or _refresh_panic stopped binding.")
+
+
+# ── Pointer movement ─────────────────────────────────────────────────────────
+# The glide is on by default and the switch is the escape hatch, so the control
+# has to survive a round trip through settings — a preference that reads back
+# wrong is worse than no preference, because the app then behaves in a way the
+# window denies.
+
+
+def test_the_pointer_movement_setting_survives_a_round_trip(window):
+    import flow
+    tab = window._settings_tab
+    s = window._settings.s
+
+    s.smooth_mouse = False
+    s.mouse_travel_pps = 1200
+    tab._load()
+    assert tab._smooth_mouse.isChecked() is False
+    assert tab._travel_speed.value() == 1200
+    assert tab._travel_speed.isEnabled() is False, (
+        "a speed box that cannot affect anything must not look live")
+
+    tab._smooth_mouse.setChecked(True)
+    tab._travel_speed.setValue(2400)
+    tab.save_to_settings()
+    assert s.smooth_mouse is True and s.mouse_travel_pps == 2400
+    assert tab._travel_speed.isEnabled() is True
+
+    # A speed the engine would refuse is not reachable from the control.
+    assert tab._travel_speed.minimum() >= int(flow.MIN_TRAVEL_PPS)
+    assert tab._travel_speed.maximum() <= int(flow.MAX_TRAVEL_PPS)
+
+
+def test_the_click_editor_round_trips_held_modifiers(main_mod):
+    """A pointer step can be performed with modifiers held — ctrl-click to add
+    to a selection, shift-click to extend one. The recorder captures them, and
+    this dialog rebuilds a step's data from its widgets rather than amending
+    it, so without a control for them, opening a recorded Ctrl-click and
+    pressing OK silently turned it back into a plain click.
+    """
+    import flow
+    from recorder import SeqStep
+
+    # A recorded ctrl-click reopens with Ctrl ticked, and survives OK untouched.
+    dlg = main_mod.StepDialog(
+        SeqStep(SeqStep.CLICK, {"x": 10, "y": 20, "button": "left",
+                                "clicks": 1, "mods": ["ctrl"]}, 0),
+        default_text_cps=20, family="click")
+    try:
+        assert dlg._click_mods["ctrl"].isChecked()
+        assert not dlg._click_mods["shift"].isChecked()
+        dlg._on_ok()
+        assert flow.pointer_mods(dlg._result_step.data) == ["ctrl"]
+    finally:
+        dlg.hide()
+
+    # And one can be built by hand, in flow's canonical order whatever order
+    # the boxes were ticked in.
+    dlg = main_mod.StepDialog(None, default_text_cps=20, family="click")
+    try:
+        dlg._click_mods["shift"].setChecked(True)
+        dlg._click_mods["ctrl"].setChecked(True)
+        dlg._on_ok()
+        assert dlg._result_step.data["mods"] == ["ctrl", "shift"]
+    finally:
+        dlg.hide()
+
+
+def test_a_click_with_no_modifiers_does_not_say_so_in_the_file(main_mod):
+    """`flow.pointer_mods` reads the absence of the field as "none", which is
+    what every flow saved before modifiers existed says. Writing "mods": []
+    into every click from now on says the same thing in a way that reads like
+    a setting somebody chose."""
+    from recorder import SeqStep
+
+    dlg = main_mod.StepDialog(None, default_text_cps=20, family="click")
+    try:
+        dlg._on_ok()
+        assert "mods" not in dlg._result_step.data
+    finally:
+        dlg.hide()
+
+
+def test_a_recorded_modifier_the_editor_can_show_is_not_normalised_away(main_mod):
+    """A hand-written step can say "CTRL", or list them the other way round."""
+    import flow
+    from recorder import SeqStep
+
+    dlg = main_mod.StepDialog(
+        SeqStep(SeqStep.DRAG, {"x": 1, "y": 2, "to_x": 3, "to_y": 4,
+                               "mods": ["SHIFT", "Ctrl"]}, 0),
+        default_text_cps=20, family="click")
+    try:
+        assert dlg._drag_mods["ctrl"].isChecked()
+        assert dlg._drag_mods["shift"].isChecked()
+        assert not dlg._drag_mods["alt"].isChecked()
+    finally:
+        dlg.hide()
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  The window guard — "abort if an unexpected window appears"
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# ⚠ This survived a mutation. `scratchpad/mutation_audit.py` replaced
+# `_check_guard`'s early-return condition with `if True:` — the guard never
+# trips, ever — and the whole suite stayed green (8 September 2026).
+#
+# It is the failsafe somebody switches on *because* a flow has already
+# misbehaved once: an unexpected dialog steals focus and the automation carries
+# on clicking into it. Deny-list mode aborts when the foreground window matches
+# a forbidden title; allow-list mode aborts when it is anything but an approved
+# one. Neither half was held by anything.
+
+def _guarded(window, *, running=True, enabled=True, mode="deny",
+             titles=("Notepad",), foreground="Notepad"):
+    """Arm the guard, fake the foreground window, and record any abort."""
+    import sys as _sys
+    import types as _types
+
+    s = window._settings.s
+    s.guard_enabled = enabled
+    s.guard_mode = mode
+    s.guard_titles = list(titles)
+    window._running = running
+
+    fake = _types.ModuleType("win32gui")
+    fake.GetForegroundWindow = lambda: 1
+    fake.GetWindowText = lambda _h: foreground
+    old = _sys.modules.get("win32gui")
+    _sys.modules["win32gui"] = fake
+
+    aborted = []
+    real_panic = window._panic
+    window._panic = lambda *a, **k: aborted.append(True)
+    try:
+        window._check_guard()
+    finally:
+        window._panic = real_panic
+        if old is None:
+            _sys.modules.pop("win32gui", None)
+        else:
+            _sys.modules["win32gui"] = old
+    return bool(aborted)
+
+
+def test_the_guard_aborts_on_a_forbidden_window(window):
+    """⚠ The mutation's target. A deny-listed title in the foreground while a
+    flow is running has to stop the run."""
+    assert _guarded(window, mode="deny", titles=("Notepad",),
+                    foreground="Untitled - Notepad"), \
+        "a forbidden window came to the front and the flow carried on"
+
+
+def test_the_guard_leaves_an_ordinary_window_alone(window):
+    """The other half, and without it a guard that aborts unconditionally
+    would pass the test above. Aborting a working flow is its own bug."""
+    assert not _guarded(window, mode="deny", titles=("Notepad",),
+                        foreground="The game I am automating")
+
+
+def test_allow_list_mode_aborts_on_anything_unapproved(window):
+    assert _guarded(window, mode="allow", titles=("MyGame",),
+                    foreground="Some Installer") is True
+    assert _guarded(window, mode="allow", titles=("MyGame",),
+                    foreground="MyGame - level 3") is False
+
+
+def test_the_guard_does_nothing_when_it_is_switched_off(window):
+    assert not _guarded(window, enabled=False, foreground="Notepad")
+
+
+def test_the_guard_does_nothing_when_no_flow_is_running(window):
+    """It aborts a run; with no run there is nothing to abort, and firing the
+    panic path at an idle app would stop whatever the user was doing by hand."""
+    assert not _guarded(window, running=False, foreground="Notepad")
+
+
+def test_an_empty_title_list_never_aborts(window):
+    """⚠ Allow-list mode with no titles would otherwise mean "abort on every
+    window", which is switching the guard on and having the app refuse to run
+    anything at all."""
+    assert not _guarded(window, mode="allow", titles=(), foreground="Anything")
+    assert not _guarded(window, mode="deny", titles=(), foreground="Anything")
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  A recorded hover survives being opened in the editor
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# ⚠ `StepDialog` rebuilds a step's data from its widgets, so a field it does not
+# display is destroyed by Open-then-OK. `mods` was fixed that way earlier;
+# `SeqStep.MOVE` was worse, because the dialog did not know the KIND.
+#
+# `_load`'s kind_map had no entry for MOVE, so `kind_map.get(s.kind, 0)`
+# fell through to Click — and the Click branch that loads x/y never ran,
+# because it is guarded on `s.kind == SeqStep.CLICK`. Opening a recorded
+# hover and pressing OK therefore produced a **left click at (0, 0)**: a real
+# action, in the corner of the screen, replacing the one that was there.
+#
+# It went unnoticed because MOVE used to be unreachable — "a step you could add
+# by hand, that the engine could run, and that no recording could ever contain"
+# — until hover capture landed on 8 September 2026 and every recorded hover
+# became one.
+
+def _move_step(main_mod, x=300, y=400, delay=150.0):
+    from recorder import SeqStep
+    return SeqStep(SeqStep.MOVE, {"x": x, "y": y}, delay)
+
+
+def test_a_move_step_opens_as_a_move(main_mod, qapp):
+    from recorder import SeqStep
+    dlg = main_mod.StepDialog(_move_step(main_mod), None, default_text_cps=10.0)
+    try:
+        dlg._on_ok()
+        out = dlg._result_step
+    finally:
+        dlg.hide()
+    assert out is not None, "OK produced no step"
+    assert out.kind == SeqStep.MOVE, (
+        f"a Move step came back as {out.kind!r} — the editor converted it")
+
+
+def test_a_move_step_keeps_where_it_was_going(main_mod, qapp):
+    """⚠ The damage. (0, 0) is not a neutral default here: it is the top-left
+    corner of the screen, and the step still runs."""
+    dlg = main_mod.StepDialog(_move_step(main_mod, 300, 400), None,
+                              default_text_cps=10.0)
+    try:
+        dlg._on_ok()
+        out = dlg._result_step
+    finally:
+        dlg.hide()
+    assert (out.data.get("x"), out.data.get("y")) == (300, 400), (
+        f"moved to {out.data.get('x')},{out.data.get('y')} instead of 300,400")
+
+
+def test_a_move_step_keeps_its_delay(main_mod, qapp):
+    """`move` carries its delay in the step, like `click` and unlike `drag` —
+    and that delay is the recorded dwell that made it a hover in the first
+    place."""
+    dlg = main_mod.StepDialog(_move_step(main_mod, delay=150.0), None,
+                              default_text_cps=10.0)
+    try:
+        dlg._on_ok()
+        out = dlg._result_step
+    finally:
+        dlg.hide()
+    assert abs(out.delay_ms - 150.0) < 1.0, f"delay became {out.delay_ms}"
+
+
+def test_the_click_panels_delay_does_not_ride_along_into_a_move(main_mod, qapp):
+    """⚠ The trap Scroll and Drag already document: "Delay before" is a row
+    inside the *Click* panel, so a Move that read `self._delay` would inherit
+    whatever was typed there before the family toggle was switched."""
+    dlg = main_mod.StepDialog(_move_step(main_mod, delay=150.0), None,
+                              default_text_cps=10.0)
+    try:
+        dlg._delay.setValue(9999)          # as if Click had been visited first
+        dlg._on_ok()
+        out = dlg._result_step
+    finally:
+        dlg.hide()
+    assert out.delay_ms != 9999, "the Click panel's delay leaked into the Move"
+
+
+def test_move_is_reachable_from_the_click_family(main_mod, qapp):
+    """Wiring: the step kind is worthless in the editor if no palette route
+    reaches it. Click, Move, Drag and Scroll are the pointer's four verbs and
+    they share one palette button."""
+    from recorder import SeqStep
+    dlg = main_mod.StepDialog(None, None, default_text_cps=10.0, family="click")
+    try:
+        assert dlg._fam_indices is not None
+        idxs = list(dlg._fam_indices)
+        assert len(idxs) == 4, f"the Click family offers {len(idxs)} kinds"
+        kinds = []
+        for i in idxs:
+            dlg._type_combo.setCurrentIndex(i)
+            dlg._on_ok()
+            kinds.append(dlg._result_step.kind)
+        assert SeqStep.MOVE in kinds, f"family produces {kinds}"
+    finally:
+        dlg.hide()
+
+
+def test_a_recorded_spin_keeps_its_measured_rate_through_the_editor(main_mod, qapp):
+    """⚠ The recorder measures a spin's real rate now — 33.06 notches/s for a
+    flick, 6.67 for a slow scroll — and the Speed box was an integer spin, so
+    the first Open-then-OK rounded it. Trivial for a flick, 10% for a slow one,
+    and a loss of a number that was measured rather than typed."""
+    from recorder import SeqStep
+    step = SeqStep(SeqStep.SCROLL,
+                   {"direction": "down", "amount": 7, "speed_nps": 6.7,
+                    "at_cursor": True}, 0.0)
+    dlg = main_mod.StepDialog(step, None, default_text_cps=10.0)
+    try:
+        dlg._on_ok()
+        out = dlg._result_step
+    finally:
+        dlg.hide()
+    assert abs(float(out.data["speed_nps"]) - 6.7) < 0.11, (
+        f"a 6.7 notches/s spin came back as {out.data['speed_nps']}")
+
+
+def test_as_fast_as_possible_survives_being_reopened(main_mod, qapp):
+    """0 is a distinct meaning — "send them as fast as the backend will take
+    them" — and it has its own special text in the box. Turning it into 0.0 is
+    fine; turning it into anything else would pace a step that was not paced."""
+    from recorder import SeqStep
+    step = SeqStep(SeqStep.SCROLL,
+                   {"direction": "up", "amount": 3, "speed_nps": 0,
+                    "at_cursor": True}, 0.0)
+    dlg = main_mod.StepDialog(step, None, default_text_cps=10.0)
+    try:
+        dlg._on_ok()
+        out = dlg._result_step
+    finally:
+        dlg.hide()
+    assert float(out.data["speed_nps"]) == 0.0
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  The modal that stopped this file dead
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# ⚠ This is the mechanism behind the hang `_no_recovery_prompt` exists to
+# prevent, pinned deterministically so it cannot come back unexplained.
+#
+# It is worth stating what is and is not proven. The faulthandler dump is hard
+# evidence that a modal blocked a real run:
+#
+#     Timeout (0:00:45)!
+#       File "main.py", line 5564 in _offer_recovery
+#       File "tests/test_gui_offscreen.py", line 4384 in
+#           test_the_library_buttons_fit_at_the_dialogs_own_minimum_width
+#
+# What is NOT proven by simply re-running is that the fixture is load-bearing:
+# the hang needs a 20-second timer to have fired *and* written an offerable
+# payload before a later MainWindow is built, so a green run proves nothing
+# either way. That is exactly why this test creates the condition on purpose
+# rather than waiting for it.
+
+def test_a_pending_recovery_puts_a_modal_in_front_of_the_suite(main_mod, qapp,
+                                                               monkeypatch):
+    """⚠ With a payload on disk, building a MainWindow asks a question — and
+    offscreen there is nobody to answer it.
+
+    `QMessageBox.question` is stubbed here, so what would be an unrecoverable
+    hang is recorded as a call instead. If this ever stops being asked, the
+    autouse fixture above has become unnecessary and can go; while it IS asked,
+    removing that fixture puts the flake back.
+    """
+    import flow
+    import recovery
+    monkeypatch.setattr(recovery, "read", _REAL_RECOVERY_READ)
+
+    g = flow.FlowGraph()
+    g.add_node(flow.N_START, {"name": flow.START_NAME}, x=-280, y=-20)
+    g.add_node(flow.N_ACTION,
+               {"step": {"kind": "text", "data": {"text": "unsaved"}}},
+               x=0, y=0)
+    assert recovery.write(g, ""), "could not stage a recovery payload"
+    assert recovery.offerable(recovery.read()) is not None
+
+    asked = []
+    monkeypatch.setattr(
+        main_mod.QMessageBox, "question",
+        staticmethod(lambda *a, **kw: (asked.append(1),
+                                       main_mod.QMessageBox.No)[1]))
+    w = main_mod.MainWindow()
+    try:
+        qapp.processEvents()          # let QTimer.singleShot(0, ...) fire
+        assert asked, (
+            "no modal was raised for a pending recovery — either the offer is "
+            "no longer wired into startup, or it stopped being modal")
+    finally:
+        try:
+            w._shutdown()
+        except Exception:
+            pass
+        w.hide()
+        recovery.clear()
+
+
+def test_the_fixture_really_silences_the_offer(main_mod, qapp, monkeypatch):
+    """The other half: with the fixture in force, the same staged payload
+    raises nothing. Without this, the test above could pass while the fixture
+    quietly did nothing."""
+    import flow
+    import recovery
+    g = flow.FlowGraph()
+    g.add_node(flow.N_START, {"name": flow.START_NAME}, x=-280, y=-20)
+    g.add_node(flow.N_ACTION,
+               {"step": {"kind": "text", "data": {"text": "unsaved"}}},
+               x=0, y=0)
+    recovery.write(g, "")             # written, but `read` is stubbed to None
+
+    asked = []
+    monkeypatch.setattr(
+        main_mod.QMessageBox, "question",
+        staticmethod(lambda *a, **kw: (asked.append(1),
+                                       main_mod.QMessageBox.No)[1]))
+    w = main_mod.MainWindow()
+    try:
+        qapp.processEvents()
+        assert not asked, "the recovery prompt got through the fixture"
+    finally:
+        try:
+            w._shutdown()
+        except Exception:
+            pass
+        w.hide()
+        recovery.clear()

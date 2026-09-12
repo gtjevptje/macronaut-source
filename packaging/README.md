@@ -140,7 +140,7 @@ bot bumps the version and hash by itself after each release and no manual PR is
 needed for updates. Note that means the release tag format `v$version` is now
 load-bearing for something outside this repo.
 
-No `persist` block, deliberately: Macronaut keeps macros and settings in
+No `persist` block, deliberately: Macronaut keeps scripts and settings in
 `~/.macronaut`, outside the install directory, so an update cannot lose them.
 
 ## Keeping these current

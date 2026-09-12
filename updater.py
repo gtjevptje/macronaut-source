@@ -94,18 +94,19 @@ class UpdateInfo:
     sha256: str
     size: int = 0
     notes: str = ""
-    # ⚠ Carried from the manifest and read by NOTHING. `release.py --mandatory`
-    # writes it, `parse_manifest` stores it, and no client consults it:
-    # `updater_ui.UpdateDialog` offers Skip / Later / Install whatever this
-    # says. Checked across the whole tree on 4 September 2026.
+    # ⚠ There was a `mandatory: bool` here until 12 September 2026, written by
+    # `release.py --mandatory` and read by nothing. Dropped rather than wired
+    # up, deliberately. A forced update needs an answer for the download that
+    # fails — offline, GitHub down, antivirus blocking the write — and both
+    # answers are bad: block the app, and a failed network call bricks
+    # someone's tool; fall through to Later, and the promise was never real.
+    # That path also cannot be tested honestly on one machine. Macronaut runs
+    # long unattended jobs, so interrupting one to force an install is worse
+    # here than in a browser.
     #
-    # It is the shape of promise worth being loud about, because the moment you
-    # would reach for it is a security fix you want everyone on — precisely
-    # when quietly doing nothing is most expensive. Either wire it up
-    # deliberately (which means deciding whether Macronaut is willing to take
-    # "Later" away from somebody) or drop the flag; leaving it is the one
-    # option that misleads.
-    mandatory: bool = False
+    # If a security fix ever needs urgency, add `urgent: bool` instead and give
+    # UpdateDialog a banner saying what the fix is, keeping Later. Same
+    # manifest shape, about an hour, none of the above.
     published: str = ""
 
     @property
@@ -315,7 +316,6 @@ def parse_manifest(data: dict) -> UpdateInfo:
     return UpdateInfo(
         version=ver, url=url, sha256=sha, size=size,
         notes=str(data.get("notes", "") or ""),
-        mandatory=bool(data.get("mandatory", False)),
         published=str(data.get("published", "") or ""),
     )
 

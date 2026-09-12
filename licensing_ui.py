@@ -207,7 +207,7 @@ class UpgradeDialog(QDialog):
         v.setContentsMargins(20, 18, 20, 16)
         v.setSpacing(12)
 
-        head = QLabel("This flow needs Macronaut Pro")
+        head = QLabel("This script needs Macronaut Pro")
         head.setStyleSheet("font-size: 15pt; font-weight: 600;")
         v.addWidget(head)
 
@@ -217,7 +217,7 @@ class UpgradeDialog(QDialog):
             v.addWidget(why)
 
         what = _hint(
-            "Pro adds the steps that let a flow watch the screen and decide "
+            "Pro adds the steps that let a script watch the screen and decide "
             "what to do — Wait for image, Wait for text, Wait for pixel, "
             # ⚠ "variables" was in this list and is deliberately not any more.
             # `flow.py` implements `set_var` and the `var` condition, but no

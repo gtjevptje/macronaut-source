@@ -190,9 +190,22 @@ def sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-def write_manifest(ver: str, notes: str = "", mandatory: bool = False) -> Path:
-    if not EXE.exists():
-        raise SystemExit(f"error: {EXE} not found — build first")
+def write_manifest(ver: str, notes: str = "") -> Path:
+    # ⚠ Order matters, and it is checked before the build on purpose.
+    #
+    # A missing .exe is a two-minute fix. A placeholder UPDATE_REPO is
+    # unrecoverable once anything ships — see the block below. Reporting the
+    # cheap problem first meant the expensive one stayed hidden behind it.
+    #
+    # ⚠⚠ It also had a second cost, which is how this was found: the test that
+    # guards the placeholder could only reach it on a machine that had already
+    # built. On a clean checkout — every CI run, every contributor's first
+    # clone — `write_manifest` died on the missing .exe instead, and the test
+    # failed. The public mirror's CI had been red on exactly this since
+    # 3 September 2026, with a failing badge at the top of the README, on a
+    # project whose whole open-source argument is that the tests are
+    # inspectable. Verified against the run log, not inferred.
+    #
     # ⚠⚠ Fatal, not a warning, and this is the one place in the file where that
     # distinction is unarguable. An installed build asks the URL baked into its
     # own .exe, forever — UPDATE_REPO is effectively permanent the moment
@@ -211,6 +224,8 @@ def write_manifest(ver: str, notes: str = "", mandatory: bool = False) -> Path:
             "Every build published with it would ask a repository that does "
             "not exist for its updates, permanently and unfixably. Set it to "
             "the real owner/repo before releasing.")
+    if not EXE.exists():
+        raise SystemExit(f"error: {EXE} not found — build first")
     data = {
         "version": ver,
         "url": (f"https://github.com/{_v.UPDATE_REPO}/releases/download/"
@@ -218,7 +233,6 @@ def write_manifest(ver: str, notes: str = "", mandatory: bool = False) -> Path:
         "sha256": sha256(EXE),
         "size": EXE.stat().st_size,
         "notes": notes,
-        "mandatory": mandatory,
         "published": time.strftime("%Y-%m-%d"),
     }
     MANIFEST.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
@@ -348,10 +362,6 @@ def main(argv: list) -> int:
                     help="create the GitHub release and upload the assets")
     ap.add_argument("--notes", default="", help="release notes text")
     ap.add_argument("--notes-file", help="read release notes from a file")
-    ap.add_argument("--mandatory", action="store_true",
-                    help="write mandatory:true in the manifest — ⚠ NO CLIENT "
-                         "ACTS ON IT; the update dialog still offers Later and "
-                         "Skip. See the note on UpdateInfo.mandatory.")
     args = ap.parse_args(argv)
 
     notes = args.notes
@@ -386,7 +396,7 @@ def main(argv: list) -> int:
     if args.sign:
         sign(EXE)
     if args.manifest:
-        write_manifest(ver, notes, args.mandatory)
+        write_manifest(ver, notes)
     if args.publish:
         publish(ver, notes)
 

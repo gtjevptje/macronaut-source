@@ -712,6 +712,23 @@ def _field(label_text: str, *widgets, grow=None) -> QWidget:
     return cont
 
 
+def _mod_checks(what: str) -> dict:
+    """Ctrl / Alt / Shift / Win checkboxes, in flow's canonical order.
+
+    A pointer step can be performed with modifiers held — ctrl-click to add to
+    a selection, shift-click to extend one, alt-drag to copy, shift-scroll to
+    go sideways. The recorder captures them; this is how you build one by hand.
+    """
+    boxes = {}
+    for m in flow.MOD_ORDER:
+        cb = QCheckBox(m.capitalize())
+        cb.setToolTip(f"Hold {m.capitalize()} down for the whole {what}, the "
+                      f"way you would with your other hand. It goes down "
+                      f"before the {what} and comes back up after.")
+        boxes[m] = cb
+    return boxes
+
+
 def _segmented(options, group, checked_id: int = 0):
     """A segmented (pill) control backed by `group` (a QButtonGroup). Buttons get
     ids 0..n-1, so existing checkedId()/button(i) logic keeps working."""
@@ -1356,8 +1373,12 @@ class StepDialog(QDialog):
         # Scroll and Drag are appended rather than filed next to Click, because
         # every index in here is a stored position that _on_ok/_load already
         # speak. The segmented toggle below puts them in a sensible order.
+        # ⚠ Appended, like Scroll and Drag before it: every index in here is a
+        # stored position that _on_ok/_load already speak, so inserting Move
+        # next to Click would renumber four kinds.
         self._type_combo.addItems(["Click", "Key / Combo", "Type Text", "Wait",
-                                   "Image", "Text", "Pixel", "Scroll", "Drag"])
+                                   "Image", "Text", "Pixel", "Scroll", "Drag",
+                                   "Move"])
         self._type_combo.currentIndexChanged.connect(self._on_type_change)
         type_row.addWidget(self._type_combo)
         self._type_row_w = _pane(type_row)
@@ -1374,7 +1395,8 @@ class StepDialog(QDialog):
             # device would be a worse trade than one toggle inside the editor.
             # Ordered press → drag → turn, which is neither the combo order nor
             # the order they were built in; _fam_indices maps segment to index.
-            "click":  ([0, 8, 7], ["Click", "Drag", "Scroll"], "Click"),
+            "click":  ([0, 9, 8, 7], ["Click", "Move", "Drag", "Scroll"],
+                       "Click"),
             "wait":   ([3], None, "Wait"),
             "type":   ([1, 2], ["Key / combo", "Type text"], "Type"),
             "detect": ([4, 5, 6], ["Image", "Text", "Pixel"], "Detect"),
@@ -1416,12 +1438,13 @@ class StepDialog(QDialog):
         self._stack_pixwait = self._build_pixwait_panel()
         self._stack_scroll = self._build_scroll_panel()
         self._stack_drag = self._build_drag_panel()
+        self._stack_move = self._build_move_panel()
 
         for w in (self._stack_click, self._stack_key,
                   self._stack_text, self._stack_wait,
                   self._stack_imgwait, self._stack_textwait,
                   self._stack_pixwait, self._stack_scroll,
-                  self._stack_drag):
+                  self._stack_drag, self._stack_move):
             lay.addWidget(w)
 
         btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -1443,7 +1466,11 @@ class StepDialog(QDialog):
         self._sync_family_seg()
 
     # ── Panel builders ────────────────────────────────────────────────
-    CLICK_BUTTONS = ["left", "right", "middle"]
+    # From flow, so the dialog and the engine cannot disagree about what a
+    # button is called. Stored by NAME in the step (see the build path), so
+    # extending this list does not renumber anything already saved.
+    CLICK_BUTTONS = list(flow.BUTTONS)
+    CLICK_BUTTON_LABELS = [flow.button_label(b) for b in flow.BUTTONS]
 
     def _build_click_panel(self) -> QWidget:
         """Where, then how — the two questions a click actually asks.
@@ -1473,7 +1500,11 @@ class StepDialog(QDialog):
 
         how, hl = _card("How", "Which button, and what kind of press.")
         self._click_btn_grp = QButtonGroup(self)
-        seg_btn, _ = _segmented(["Left", "Right", "Middle"], self._click_btn_grp, 0)
+        seg_btn, _ = _segmented(self.CLICK_BUTTON_LABELS, self._click_btn_grp, 0)
+        seg_btn.setToolTip(
+            "Back and Forward are the two side buttons — Mouse 4 and Mouse 5 "
+            "if you game with them. They were recorded as left clicks until "
+            "8 September 2026.")
         hl.addWidget(_field("Button", seg_btn))
 
         self._click_mode_grp = QButtonGroup(self)
@@ -1485,6 +1516,9 @@ class StepDialog(QDialog):
         self._click_hold_row = _field("Hold for", self._click_hold_ms)
         self._click_hold_row.setVisible(False)
         hl.addWidget(self._click_hold_row)
+
+        self._click_mods = _mod_checks("click")
+        hl.addWidget(_field("Holding", *self._click_mods.values()))
 
         self._delay = _durspin(0, 60000, 0, w=130)
         self._delay.setToolTip("Pause before this click. Every other step kind "
@@ -1501,6 +1535,51 @@ class StepDialog(QDialog):
     SCROLL_DIRS = (flow.SCROLL_UP, flow.SCROLL_DOWN,
                    flow.SCROLL_LEFT, flow.SCROLL_RIGHT)
     SCROLL_AT_CURSOR, SCROLL_AT_POS = 0, 1
+
+    def _build_move_panel(self) -> QWidget:
+        """Where to put the pointer, and how long to wait first.
+
+        The thinnest panel in the dialog, and deliberately: a Move is a Click
+        with the click taken off. It exists as its own kind because the
+        recorder produces one for every hover — a pause over a menu that opens
+        on mouse-enter is a real step, and replaying the click without it
+        clicks a menu that never opened.
+
+        ⚠ Its own delay spin rather than the Click panel's `self._delay`. That
+        row is built inside the Click card, and reading it here would let a
+        value typed there ride along invisibly after switching the family
+        toggle — the same trap Scroll and Drag each document.
+        """
+        w = _pane()
+        v = QVBoxLayout(w)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(10)
+
+        where, wl = _card("Where", "Desktop coordinates, so a second monitor "
+                                   "works the same as the first.")
+        self._move_x = _spin(-32000, 32000, w=96)
+        self._move_x.setToolTip("Horizontal position, in desktop pixels")
+        self._move_y = _spin(-32000, 32000, w=96)
+        self._move_y.setToolTip("Vertical position, in desktop pixels")
+        self._btn_pick_move = QPushButton("⊕  Pick position (3 s)")
+        self._btn_pick_move.setToolTip(
+            "Move your cursor to the target and wait — position is captured "
+            "after 3 seconds")
+        self._btn_pick_move.clicked.connect(
+            lambda: self._begin_pick(self._btn_pick_move,
+                                     self._move_x, self._move_y))
+        wl.addWidget(_field("Position", self._move_x, self._move_y,
+                            self._btn_pick_move))
+        v.addWidget(where)
+
+        how, hl = _card("How long", "The pause before the pointer sets off. A "
+                                    "recorded hover keeps the dwell that made "
+                                    "it a hover.")
+        self._move_delay = _durspin(0, 60000, 0, w=130)
+        self._move_delay.setToolTip("Pause before this move.")
+        hl.addWidget(_field("Delay before", self._move_delay))
+        v.addWidget(how)
+        return w
 
     def _build_scroll_panel(self) -> QWidget:
         """Where, then how — the same two questions the Click panel asks, in the
@@ -1555,8 +1634,15 @@ class StepDialog(QDialog):
         # No fixed width: _spin's `w` is a *fixed* width, and the special value
         # text is far longer than any number in the range — pinning it would
         # clip the one string that has to be readable to be believed.
-        self._scroll_speed = _spin(0, int(flow.MAX_SCROLL_CPS), 0,
-                                   suffix=" notches/s")
+        # ⚠ A DOUBLE spin, since 8 September 2026. The recorder measures a
+        # spin's real rate now — 33.06 notches/s for a flick, 6.67 for a
+        # slow scroll — and an integer box silently rounded that on the
+        # first Open-then-OK. Trivial for a flick, 10% for a slow one, and
+        # a loss of something that was measured rather than typed. Same
+        # shape as the Type-text rate beside it, which is also a rate.
+        self._scroll_speed = _dspin(0, float(flow.MAX_SCROLL_CPS), 0.0,
+                                    step=1.0, suffix=" notches/s")
+        self._scroll_speed.setDecimals(1)
         self._scroll_speed.setSpecialValueText("as fast as possible")
         self._scroll_speed.setToolTip(
             "Notches per second. 0 sends them as fast as the backend will "
@@ -1564,6 +1650,9 @@ class StepDialog(QDialog):
             "list scrolls smoothly or lazily loads as you go — a receiver that "
             "reads input once a frame only takes so much per pass.")
         hl.addWidget(_field("Speed", self._scroll_speed))
+
+        self._scroll_mods = _mod_checks("scroll")
+        hl.addWidget(_field("Holding", *self._scroll_mods.values()))
         v.addWidget(how)
 
         self._pick_timer_scroll: Optional[QTimer] = None
@@ -1639,7 +1728,7 @@ class StepDialog(QDialog):
         how, hl = _card("How", "Which button is held, and how long the pointer "
                                "takes to travel.")
         self._drag_btn_grp = QButtonGroup(self)
-        seg_btn, _ = _segmented(["Left", "Right", "Middle"], self._drag_btn_grp, 0)
+        seg_btn, _ = _segmented(self.CLICK_BUTTON_LABELS, self._drag_btn_grp, 0)
         hl.addWidget(_field("Button", seg_btn))
 
         self._drag_ms = _durspin(0, flow.MAX_DRAG_MS, flow.DEFAULT_DRAG_MS, w=130)
@@ -1650,6 +1739,9 @@ class StepDialog(QDialog):
             "any value. Macronaut sends one move per frame for the whole "
             "duration, so the target sees a path rather than a jump.")
         hl.addWidget(_field("Travel time", self._drag_ms))
+
+        self._drag_mods = _mod_checks("drag")
+        hl.addWidget(_field("Holding", *self._drag_mods.values()))
         v.addWidget(how)
         return w
 
@@ -1724,7 +1816,7 @@ class StepDialog(QDialog):
          "A quick press. Held just long enough (Settings → Key hold time) for a "
          "game that polls once a frame to see it at all."),
         ("Hold for a set time",
-         "Presses, waits, releases — all inside this node. The flow does not "
+         "Presses, waits, releases — all inside this node. The script does not "
          "move on until the hold is over."),
         ("Hold down — keep it pressed",
          "Presses and moves straight on, so the nodes after this one run with "
@@ -1953,7 +2045,11 @@ class StepDialog(QDialog):
     def _click_opts_row(self, attr_prefix: str):
         """Button + double-click, the same controls in all three Detect panels."""
         combo = QComboBox()
-        combo.addItems(["left", "right", "middle"])
+        # The label is shown and the stored name travels as item data, so the
+        # list can say "Back" while the step says "x1" — and so the raw
+        # lowercase names stop appearing in the UI, which they did until now.
+        for b in flow.BUTTONS:
+            combo.addItem(flow.button_label(b), b)
         combo.setFixedWidth(110)
         dbl = QCheckBox("Double-click")
         setattr(self, attr_prefix + "_btn", combo)
@@ -1987,7 +2083,7 @@ class StepDialog(QDialog):
 
         self._imgwait_conf = _dspin(0.1, 1.0, 0.8, 0.05, w=90)
         self._imgwait_conf.setToolTip("How close the match has to be. Lower it if "
-                                      "a flow stops matching on another screen.")
+                                      "a script stops matching on another screen.")
         btn_test = QPushButton("Test match")
         btn_test.clicked.connect(lambda: _run_match_test(
             self._imgwait_path.text(), self._imgwait_conf.value(),
@@ -2296,7 +2392,7 @@ class StepDialog(QDialog):
                   self._stack_text, self._stack_wait,
                   self._stack_imgwait, self._stack_textwait,
                   self._stack_pixwait, self._stack_scroll,
-                  self._stack_drag]
+                  self._stack_drag, self._stack_move]
         for i, p in enumerate(panels):
             p.setVisible(i == idx)
         self._refit()
@@ -2395,10 +2491,17 @@ class StepDialog(QDialog):
             mode = self._click_mode()
             clk  = 2 if mode == self.CLICK_DOUBLE else 1
             hold = mode == self.CLICK_HOLD
-            self._result_step = SeqStep(SeqStep.CLICK,
-                                        {"button": btn, "x": x, "y": y,
-                                         "clicks": clk, "hold": hold,
-                                         "hold_ms": self._click_hold_ms.value()}, delay)
+            self._result_step = SeqStep(SeqStep.CLICK, self._with_mods(
+                {"button": btn, "x": x, "y": y,
+                 "clicks": clk, "hold": hold,
+                 "hold_ms": self._click_hold_ms.value()},
+                self._click_mods), delay)
+        elif idx == 9:  # Move
+            # Its own delay, never self._delay — see _build_move_panel.
+            self._result_step = SeqStep(
+                SeqStep.MOVE,
+                {"x": self._move_x.value(), "y": self._move_y.value()},
+                self._move_delay.value())
         elif idx == 7:  # Scroll
             # Delay 0, deliberately: "Delay before" is a row inside the *Click*
             # panel, and a scroll step carries its delay on the node like every
@@ -2414,18 +2517,18 @@ class StepDialog(QDialog):
             if not at_cursor:
                 data["x"] = self._scroll_x.value()
                 data["y"] = self._scroll_y.value()
-            self._result_step = SeqStep(SeqStep.SCROLL, data, delay)
+            self._result_step = SeqStep(SeqStep.SCROLL, self._with_mods(data, self._scroll_mods), delay)
         elif idx == 8:  # Drag
             # Delay 0, for the same reason Scroll uses 0: "Delay before" is a
             # row inside the *Click* panel, so reading it here would let a
             # value typed there ride along invisibly after toggling to Drag.
             # A drag carries its delay on the node (flow.delay_applies).
-            self._result_step = SeqStep(SeqStep.DRAG, {
+            self._result_step = SeqStep(SeqStep.DRAG, self._with_mods({
                 "button": self.CLICK_BUTTONS[max(0, self._drag_btn_grp.checkedId())],
                 "x": self._drag_x.value(), "y": self._drag_y.value(),
                 "to_x": self._drag_to_x.value(), "to_y": self._drag_to_y.value(),
                 "duration_ms": self._drag_ms.value(),
-            }, 0)
+            }, self._drag_mods), 0)
         elif idx == 1: # Key / Combo
             keys = list(self._captured_keys)
             mode = self.KEY_MODES[max(0, self._key_mode.currentIndex())]
@@ -2455,7 +2558,7 @@ class StepDialog(QDialog):
                 "confidence": self._imgwait_conf.value(),
                 "timeout_s":  self._imgwait_timeout.value(),
                 "click":      self._imgwait_do_click.isChecked(),
-                "button":     self._imgwait_btn.currentText(),
+                "button":     self._imgwait_btn.currentData(),
                 "clicks":     2 if self._imgwait_double.isChecked() else 1,
                 "offset_x":   self._imgwait_picker.offset()[0],
                 "offset_y":   self._imgwait_picker.offset()[1],
@@ -2472,7 +2575,7 @@ class StepDialog(QDialog):
                 "min_score":      self._textwait_score.value(),
                 "timeout_s":      self._textwait_timeout.value(),
                 "click":          self._textwait_do_click.isChecked(),
-                "button":         self._textwait_btn.currentText(),
+                "button":         self._textwait_btn.currentData(),
                 "clicks":         2 if self._textwait_double.isChecked() else 1,
                 "region":         self._textwait_region,
                 "fuzzy":          self._textwait_fuzzy.isChecked(),
@@ -2491,12 +2594,40 @@ class StepDialog(QDialog):
 
         self.accept()
 
+    @staticmethod
+    def _load_mods(d: dict, boxes: dict) -> None:
+        """Tick the boxes a step was recorded with.
+
+        Through flow's accessor, like every other read here: a step written by
+        hand can say "Ctrl" or "CTRL" or list them in either order, and it has
+        to reopen as the thing it actually does.
+        """
+        held = set(flow.pointer_mods(d))
+        for m, cb in boxes.items():
+            cb.setChecked(m in held)
+
+    @staticmethod
+    def _with_mods(data: dict, boxes: dict) -> dict:
+        """Add the ticked modifiers to a pointer step's data.
+
+        Absent when none are ticked rather than an empty list: `flow.pointer_mods`
+        reads the absence of the field as "no modifiers", which is what every
+        flow saved before they existed says, and writing `"mods": []` into every
+        click from now on would say the same thing in a way that looks like a
+        setting somebody chose.
+        """
+        mods = [m for m, cb in boxes.items() if cb.isChecked()]
+        if mods:
+            data["mods"] = mods
+        return data
+
     def _load(self, s: SeqStep):
         self._delay.setValue(int(s.delay_ms))
         kind_map = {SeqStep.CLICK: 0, SeqStep.KEY: 1, SeqStep.COMBO: 1,
                     SeqStep.TEXT: 2, SeqStep.WAIT: 3, SeqStep.WAIT_IMAGE: 4,
                     SeqStep.WAIT_TEXT: 5, SeqStep.WAIT_PIXEL: 6,
-                    SeqStep.SCROLL: 7, SeqStep.DRAG: 8}
+                    SeqStep.SCROLL: 7, SeqStep.DRAG: 8,
+                    SeqStep.MOVE: 9}
         self._type_combo.setCurrentIndex(kind_map.get(s.kind, 0))
         d = s.data
         if s.kind == SeqStep.CLICK:
@@ -2511,6 +2642,11 @@ class StepDialog(QDialog):
             self._click_mode_grp.button(mode).setChecked(True)
             self._on_click_mode(mode)
             self._click_hold_ms.setValue(int(d.get("hold_ms", 1000)))
+            self._load_mods(d, self._click_mods)
+        elif s.kind == SeqStep.MOVE:
+            self._move_x.setValue(int(d.get("x", 0) or 0))
+            self._move_y.setValue(int(d.get("y", 0) or 0))
+            self._move_delay.setValue(int(s.delay_ms))
         elif s.kind == SeqStep.SCROLL:
             # Read through flow's own accessors, so a hand-written or older step
             # reopens as whatever it actually does rather than as the first item
@@ -2518,13 +2654,14 @@ class StepDialog(QDialog):
             self._scroll_dir_grp.button(
                 self.SCROLL_DIRS.index(flow.scroll_direction(d))).setChecked(True)
             self._scroll_amount.setValue(flow.scroll_notches(d))
-            self._scroll_speed.setValue(int(flow.scroll_cps(d)))
+            self._scroll_speed.setValue(float(flow.scroll_cps(d)))
             where = (self.SCROLL_AT_CURSOR if d.get("at_cursor", True)
                      else self.SCROLL_AT_POS)
             self._scroll_where_grp.button(where).setChecked(True)
             self._scroll_x.setValue(int(d.get("x", 0) or 0))
             self._scroll_y.setValue(int(d.get("y", 0) or 0))
             self._on_scroll_where(where)
+            self._load_mods(d, self._scroll_mods)
         elif s.kind == SeqStep.DRAG:
             btn = d.get("button", "left")
             self._drag_btn_grp.button(
@@ -2537,6 +2674,7 @@ class StepDialog(QDialog):
             # Through flow's accessor, so a hand-written step with no duration
             # reopens as the default it actually runs at rather than as 0.
             self._drag_ms.setValue(int(flow.drag_duration_ms(d)))
+            self._load_mods(d, self._drag_mods)
         elif s.kind in (SeqStep.KEY, SeqStep.COMBO):
             self._set_captured_keys(list(d.get("keys", [])))
             self._key_repeat.setValue(int(d.get("repeat", 1) or 1))
@@ -2562,7 +2700,8 @@ class StepDialog(QDialog):
             self._imgwait_conf.setValue(d.get("confidence", 0.8))
             self._imgwait_timeout.setValue(d.get("timeout_s", 0))
             self._imgwait_do_click.setChecked(d.get("click", False))
-            self._imgwait_btn.setCurrentText(d.get("button", "left"))
+            self._imgwait_btn.setCurrentIndex(
+                max(0, self._imgwait_btn.findData(d.get("button", "left"))))
             self._imgwait_double.setChecked(d.get("clicks", 1) == 2)
             self._imgwait_picker.load_image(d.get("image_path", ""))
             self._imgwait_picker.set_offset(d.get("offset_x", 0), d.get("offset_y", 0))
@@ -2573,7 +2712,8 @@ class StepDialog(QDialog):
             self._textwait_score.setValue(d.get("min_score", 0.5))
             self._textwait_timeout.setValue(d.get("timeout_s", 0))
             self._textwait_do_click.setChecked(d.get("click", False))
-            self._textwait_btn.setCurrentText(d.get("button", "left"))
+            self._textwait_btn.setCurrentIndex(
+                max(0, self._textwait_btn.findData(d.get("button", "left"))))
             self._textwait_double.setChecked(d.get("clicks", 1) == 2)
             self._textwait_region_sel.set_region(d.get("region"))
             self._textwait_fuzzy.setChecked(d.get("fuzzy", True))
@@ -2999,14 +3139,14 @@ class ScriptLibraryDialog(QDialog):
         # way to get one back after deleting it.
         self._btn_examples = _btn(
             "Add examples", "ghost",
-            tip="Put back any of the built-in example flows you do not have.\n"
+            tip="Put back any of the built-in example scripts you do not have.\n"
                 "Never overwrites a script you already have under that name.")
         self._btn_folder = _btn("Open folder", "ghost",
                                 tip=f"Show the library in Explorer\n{scripts_dir()}")
         self._btn_delete = _btn("Delete", "danger",
                                 tip="Move the selected scripts to the deleted folder")
         self._btn_merge  = _btn("Merge", tip="Append the selected scripts "
-                                             "end-to-end into one new sequence")
+                                             "end-to-end into one new script")
         self._btn_open   = _btn("Open", "primary",
                                 tip="Load the selected script into the builder")
         btn_close = _btn("Close")
@@ -3103,7 +3243,7 @@ class ScriptLibraryDialog(QDialog):
         self._btn_delete.setEnabled(n >= 1)
         self._del_action.setEnabled(n >= 1)
         if not total:
-            self._status.setText("No saved scripts yet — save a flow, or import one.")
+            self._status.setText("No saved scripts yet — save a script, or import one.")
         elif shown < total:
             self._status.setText(f"{shown} of {total} shown"
                                  + (f"  ·  {n} selected" if n else ""))
@@ -3157,7 +3297,7 @@ class ScriptLibraryDialog(QDialog):
     def _import(self):
         import shutil
         paths, _ = QFileDialog.getOpenFileNames(
-            self, "Import scripts", "", "JSON Flows (*.json)")
+            self, "Import scripts", "", "JSON Scripts (*.json)")
         for p in paths:
             try:
                 shutil.copy(p, scripts_dir() / Path(p).name)
@@ -3558,13 +3698,13 @@ class SequenceTab(QWidget):
         self._sync_speed_presets(self._speed.value())
         footer.addStretch(1)
         for text, kind, tip, fn in [
-            ("Fit",  None, "Fit the whole flow in view", self._canvas.fit),
+            ("Fit",  None, "Fit the whole script in view", self._canvas.fit),
             ("Overall settings", None,
                                "Change delays, detection timeouts, match confidence "
-                               "and error handling across the whole flow at once",
+                               "and error handling across the whole script at once",
              self._bulk_edit),
             ("Library", None, "Browse and merge your saved scripts", self._open_library),
-            ("Save", None, "Save this flow to a .json file", self._save),
+            ("Save", None, "Save this script to a .json file", self._save),
             ("Clear", "danger", "Remove all nodes", self._clear),
         ]:
             b = _btn(text, kind, tip=tip) if kind else _btn(text, tip=tip)
@@ -4166,7 +4306,7 @@ class SequenceTab(QWidget):
         if k == "dropped":
             # Emitted by the worker's batcher. Saying so beats a log that is
             # quietly missing most of a fast loop.
-            return (f"[{ts}]  … {ev.get('n', 0):,} more events — the flow is "
+            return (f"[{ts}]  … {ev.get('n', 0):,} more events — the script is "
                     f"running faster than the log can show")
         return ""
 
@@ -4219,8 +4359,8 @@ class SequenceTab(QWidget):
             return
         default_path = self._settings.s.last_sequence_path or str(scripts_dir())
         path, _ = QFileDialog.getSaveFileName(
-            self, "Save Flow", default_path,
-            "JSON Flows (*.json)")
+            self, "Save Script", default_path,
+            "JSON Scripts (*.json)")
         if path:
             try:
                 self._graph.save(path)
@@ -4246,10 +4386,10 @@ class SequenceTab(QWidget):
                     self, "Save Error",
                     f"Couldn't save to {Path(path).name}.\n\n{e}\n\n"
                     + ("The version already on disk has not been changed, and "
-                       "your flow is still open here — try somewhere else, or "
+                       "your script is still open here — try somewhere else, or "
                        "close whatever else is using the file."
                        if existed else
-                       "Your flow is still open here and nothing has been "
+                       "Your script is still open here and nothing has been "
                        "lost. Try a different folder — this one may be "
                        "read-only or full."))
 
@@ -4263,7 +4403,7 @@ class SequenceTab(QWidget):
     def _clear(self):
         if len(self._graph.nodes) <= 1:
             return
-        r = QMessageBox.question(self, "Clear Flow", "Delete all nodes?",
+        r = QMessageBox.question(self, "Clear Script", "Delete all nodes?",
                                  QMessageBox.Yes | QMessageBox.No)
         if r == QMessageBox.Yes:
             self._graph = self._new_graph()
@@ -4320,6 +4460,7 @@ class SettingsTab(QWidget):
         col.addWidget(self._region_group())
         col.addWidget(self._focus_group())
         col.addWidget(self._blacklist_group())
+        col.addWidget(self._pointer_group())
         col.addWidget(self._keystroke_group())
         col.addWidget(self._appearance_group())
         col.addWidget(self._licence_group())
@@ -4330,12 +4471,14 @@ class SettingsTab(QWidget):
 
         self._use_region.toggled.connect(lambda *_: self._update_enabled_states())
         self._use_focus.toggled.connect(lambda *_: self._update_enabled_states())
+        self._smooth_mouse.toggled.connect(lambda *_: self._update_enabled_states())
 
     def _update_enabled_states(self):
         on = self._use_region.isChecked()
         for sp in (self._reg_x, self._reg_y, self._reg_w, self._reg_h):
             sp.setEnabled(on)
         self._focus_title.setEnabled(self._use_focus.isChecked())
+        self._travel_speed.setEnabled(self._smooth_mouse.isChecked())
 
     def _hotkey_group(self) -> QGroupBox:
         gb, v = _card("Hotkeys",
@@ -4484,7 +4627,7 @@ class SettingsTab(QWidget):
     def _failsafe_group(self) -> QGroupBox:
         gb, v = _card("Failsafe  ·  safety",
                       "A panic key that always aborts automation, plus an optional guard "
-                      "that stops a flow if an unexpected window comes to the front.")
+                      "that stops a script if an unexpected window comes to the front.")
 
         self._panic_enabled = QCheckBox("Enable panic hotkey (always aborts)")
         v.addWidget(self._panic_enabled)
@@ -4563,7 +4706,7 @@ class SettingsTab(QWidget):
 
     def _blacklist_group(self) -> QGroupBox:
         gb, v = _card("Key blacklist  ·  advanced",
-                      "A safety net: any key listed here will never be sent by sequences or "
+                      "A safety net: any key listed here will never be sent by scripts or "
                       "keystroke automation (e.g. block Win or Alt+F4).")
 
         self._blacklist = QListWidget()
@@ -4580,6 +4723,38 @@ class SettingsTab(QWidget):
         row.addWidget(self._bl_input, 1); row.addWidget(btn_add); row.addWidget(btn_rm)
         rw = QWidget(); rw.setObjectName("fieldRow"); rw.setLayout(row)
         v.addWidget(rw)
+        return gb
+
+    def _pointer_group(self) -> QGroupBox:
+        gb, v = _card("Pointer movement",
+                      "How the cursor gets to the place a step clicks — a glide across the "
+                      "screen, or straight there in one jump.")
+
+        self._smooth_mouse = QCheckBox("Move the cursor to the target instead of jumping")
+        self._smooth_mouse.setToolTip(
+            "Clicks, moves, drags and “click what you found” steps travel to "
+            "their target the way a hand would, accelerating away and slowing "
+            "onto it.\n\n"
+            "Some targets need this: a program reads the cursor once per frame "
+            "and works out what happened from where it has been, so a pointer "
+            "that appears on a button having never approached it can leave "
+            "hover effects unfired and menus unopened — and the click then "
+            "does nothing.\n\n"
+            "Turn it off for the fastest possible clicking on targets that "
+            "don't care.")
+        v.addWidget(self._smooth_mouse)
+
+        self._travel_speed = _spin(int(flow.MIN_TRAVEL_PPS), int(flow.MAX_TRAVEL_PPS),
+                                   int(flow.DEFAULT_TRAVEL_PPS), " px/s", w=150)
+        self._travel_speed.setSingleStep(250)
+        self._travel_speed.setToolTip(
+            "How fast the cursor travels. Every glide still takes at least "
+            f"{flow.MIN_TRAVEL_MS:.0f} ms and never more than "
+            f"{flow.MAX_TRAVEL_MS / 1000:.1f} s, so a nudge is still a "
+            "movement and crossing a large desktop is not a pause.")
+        v.addWidget(_field("Travel speed", self._travel_speed))
+        v.addWidget(_hint("Human mode (on the Basic face) also bows the path slightly and "
+                          "adds a pixel of tremor."))
         return gb
 
     def _keystroke_group(self) -> QGroupBox:
@@ -4671,7 +4846,7 @@ class SettingsTab(QWidget):
         self._on_top.toggled.connect(self.always_on_top_changed.emit)
         v.addWidget(self._on_top)
         v.addWidget(_hint("Useful while automating something fullscreen — you can "
-                          "still see whether a flow is running."))
+                          "still see whether a script is running."))
         return gb
 
     def _updates_group(self) -> QGroupBox:
@@ -4806,7 +4981,7 @@ class SettingsTab(QWidget):
                     "build now will keep working.")
         else:
             note = ("Clicking, typing, dragging, scrolling and waiting are "
-                    "free and always will be, in flows of up to "
+                    "free and always will be, in scripts of up to "
                     f"{entitlements.FREE_MAX_STEPS} steps.\n\nPro adds the "
                     "steps that watch the screen and decide what to do — "
                     "Wait for image, Wait for text, Wait for pixel, If / Else, "
@@ -5012,6 +5187,9 @@ class SettingsTab(QWidget):
         idx = self._input_backend.findData(getattr(s, "input_backend", "pynput"))
         self._input_backend.setCurrentIndex(idx if idx >= 0 else 0)
         self._key_hold.setValue(getattr(s, "key_hold_ms", 60))
+        self._smooth_mouse.setChecked(bool(getattr(s, "smooth_mouse", True)))
+        self._travel_speed.setValue(int(flow.travel_pps(
+            getattr(s, "mouse_travel_pps", None))))
         idx = self._type_positions.findData(getattr(s, "type_key_positions", "layout"))
         self._type_positions.setCurrentIndex(idx if idx >= 0 else 0)
         try:
@@ -5053,6 +5231,8 @@ class SettingsTab(QWidget):
         s.keystroke_interval_ms = self._ks_interval.value()
         s.input_backend       = self._input_backend.currentData() or "pynput"
         s.key_hold_ms         = self._key_hold.value()
+        s.smooth_mouse        = self._smooth_mouse.isChecked()
+        s.mouse_travel_pps    = self._travel_speed.value()
         s.type_key_positions  = self._type_positions.currentData() or "layout"
         s.theme               = THEME_ORDER[self._theme_grp.checkedId()] if self._theme_grp.checkedId() >= 0 else DEFAULT_THEME
 
@@ -5382,8 +5562,8 @@ class MainWindow(QMainWindow):
                     recovery.clear()
                 return
             r = QMessageBox.question(
-                self, "Unsaved flow",
-                "Macronaut closed with a flow on the canvas that was never "
+                self, "Unsaved script",
+                "Macronaut closed with a script on the canvas that was never "
                 f"saved.\n\n{recovery.describe(payload)}\n\nOpen it again?",
                 QMessageBox.Yes | QMessageBox.No)
             if r == QMessageBox.Yes:

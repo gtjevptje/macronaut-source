@@ -45,7 +45,7 @@ always at
 
 **In scope** — anything that lets code or input reach a place it should not:
 
-- Code execution from opening or importing a macro file (`.json`) that someone
+- Code execution from opening or importing a script file (`.json`) that someone
   else made
 - The updater accepting a build it should not: the signature or SHA-256 check
   being bypassable, or the update being fetchable over a channel an attacker

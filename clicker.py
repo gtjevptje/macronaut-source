@@ -188,11 +188,14 @@ class ClickWorker(QObject):
         gave it away: 5 ms and 10 ms waits both took 16.00 ms, a 50 ms wait
         took 62.50, a 200 ms wait took 203.00.
 
-        ⚠ `flow_exec.FlowWorker.sleep` was fixed for this **and its comment even
-        predicts the number above** — "it caps click rate at ~64 CPS however
-        low the interval goes". The fix was never carried across to the Basic
-        clicker, which is the app's most-used path and the one the published
-        interval table on the website describes. If you find another loop that
+        ⚠ `flow_exec.FlowWorker.sleep` had been fixed for this long before,
+        **and its comment even predicts the number above** — "it caps click
+        rate at ~64 CPS however low the interval goes". The fix had never been
+        carried across to the Basic clicker, which is the app's most-used path
+        and the one the published interval table on the website describes.
+        **That is what the change above is** — the gap is closed, and the
+        website's "10 ms → 100 / second" row is honest again at a measured
+        98.6 / s. Nothing is outstanding here. If you find another loop that
         paces something in milliseconds, check its clock.
         """
         deadline = time.perf_counter() + max(0.0, secs)

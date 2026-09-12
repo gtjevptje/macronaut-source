@@ -132,6 +132,7 @@ def _check_image_match() -> str:
     """
     import tempfile
     import matcher
+    from PIL.ImageDraw import Draw as _ImageDraw
 
     if not matcher.ENABLED:
         raise RuntimeError("matcher.ENABLED is False - image matching is off")
@@ -161,6 +162,54 @@ def _check_image_match() -> str:
     finally:
         _rm(patch)
         _rm(neg)
+
+    # ── the two silent-wrong-answer paths ────────────────────────────────
+    #
+    # ⚠ `_noise_image` above uses noise *specifically to avoid* the flat and
+    # cut-out cases -- its docstring says so. Both were silent wrong answers
+    # until 8 September 2026: a plain-coloured template scored a perfect 1.0
+    # at (0,0) whether or not it was on screen, and a transparent one was
+    # matched by whatever RGB the exporter left under the alpha. Neither
+    # failed loudly, and both are exactly the kind of thing that works from
+    # source and breaks frozen, which is what this file is for.
+    from PIL import Image as _Im
+
+    flat_hay = hay.copy()
+    flat_hay.paste(_Im.new("RGB", (70, 40), (0, 128, 96)), (300, 210))
+    flat = os.path.join(tmp_dir, "macronaut_selftest_flat.png")
+    absent = os.path.join(tmp_dir, "macronaut_selftest_flat_absent.png")
+    _Im.new("RGB", (70, 40), (0, 128, 96)).save(flat)
+    _Im.new("RGB", (70, 40), (190, 40, 200)).save(absent)   # nowhere on it
+    try:
+        got = matcher.find(flat, confidence=0.8, screenshot=flat_hay)
+        if got is None:
+            raise RuntimeError("a plain-coloured template was not found")
+        if abs(got.left - 300) > 4 or abs(got.top - 210) > 4:
+            raise RuntimeError(
+                f"plain template found at ({got.left},{got.top}), planted at "
+                "(300,210) - the degenerate all-positions-score-1.0 answer")
+        if matcher.find(absent, confidence=0.8, screenshot=flat_hay) is not None:
+            raise RuntimeError("a plain colour that is NOT on screen was found")
+    finally:
+        _rm(flat)
+        _rm(absent)
+
+    cut_path = os.path.join(tmp_dir, "macronaut_selftest_cutout.png")
+    cut = _Im.new("RGBA", (56, 56), (0, 0, 0, 0))
+    _ImageDraw(cut).ellipse([4, 4, 51, 51], fill=(245, 190, 40, 255))
+    cut.save(cut_path)
+    try:
+        cut_hay = hay.copy()
+        cut_hay.paste(cut, (150, 300), cut)      # over noise, not over black
+        got = matcher.find(cut_path, confidence=0.8, screenshot=cut_hay)
+        if got is None:
+            raise RuntimeError("a cut-out (transparent) template was not found "
+                               "- the alpha channel is not being used as a mask")
+        if abs(got.left - 150) > 4 or abs(got.top - 300) > 4:
+            raise RuntimeError(
+                f"cut-out found at ({got.left},{got.top}), planted at (150,300)")
+    finally:
+        _rm(cut_path)
 
     # Live capture. Only sanity-checked for size, because screen CONTENT is not
     # ours to assert on -- a blank desktop is not a broken build.
@@ -211,7 +260,71 @@ def _check_ocr() -> str:
         words = [t.text for t in ocr.read_regions(img)]
         raise RuntimeError(f"engine {tag} read {words!r} from rendered text "
                            f"{phrase!r} (score {got.score:.2f})")
-    return f"{tag}, read {phrase!r} score={got.score:.2f}"
+
+    # ── a screen too wide for the engine ─────────────────────────────────
+    #
+    # ⚠ Windows.Media.Ocr refuses any bitmap past OcrEngine.MaxImageDimension
+    # and "refuses" means it returns an EMPTY result -- no exception. Three
+    # 3440px ultrawides is 10320. An oversized grab is scaled to fit and the
+    # boxes scaled back; if that ever stops happening, Detect-text reports
+    # "not on screen" for every word on a wide desktop, silently.
+    eng = ocr.get_engine()
+    extra = ""
+    limit = getattr(eng, "max_dimension", 0)
+    if limit:
+        # ⚠ Shape chosen against measurement, not for convenience. A single
+        # phrase in 56px on a 10400x150 strip reads as NOTHING -- and so does
+        # the same strip at 9000px, which is inside the limit and never
+        # scaled, so that is the engine being odd about very wide, very
+        # sparsely-filled images rather than anything to do with fitting.
+        # 40px repeated across the width is steady at every height tried
+        # (150 through 1000) and is what a real wide desktop looks like:
+        # text all over it.
+        try:
+            wide_font = ImageFont.truetype(font.path, 40)
+        except Exception:
+            wide_font = font
+        wide = Image.new("RGB", (limit + 400, 260), "white")
+        _wd = ImageDraw.Draw(wide)
+        for _i in range(6):
+            _wd.text((60 + _i * (wide.width // 6), 110), phrase,
+                     fill="black", font=wide_font)
+        wide_got = ocr.match_phrase(phrase, wide)
+        if not wide_got.matched:
+            raise RuntimeError(
+                f"engine {tag} read nothing from a {wide.width}px-wide image "
+                f"(its limit is {limit}) - an oversized screen is not being "
+                "scaled to fit, so a wide desktop finds no text at all")
+        extra = f"; {wide.width}px wide ok"
+
+    # ── text too small to read at native size ────────────────────────────
+    #
+    # Adaptive on purpose, in the same spirit as the missing-font branch
+    # above: whether an 11px rendering needs the rescue depends on the font
+    # and the machine, and a self-test that fails on that is a bad test
+    # rather than a bad build. What must never happen is the *rescue* being
+    # the thing that broke.
+    small = Image.new("RGB", (420, 90), "white")
+    try:
+        tiny = ImageFont.truetype(font.path, 11)
+    except Exception:
+        tiny = None
+    if tiny is not None:
+        ImageDraw.Draw(small).text((14, 34), phrase, fill="black", font=tiny)
+        plain = ocr.get_engine().match_phrase(phrase, small, _zoom=False)
+        rescued = ocr.match_phrase(phrase, small)
+        if plain.matched:
+            extra += "; 11px read unaided"
+        elif rescued.matched:
+            extra += "; 11px read by the zoom rescue"
+        else:
+            extra += "; 11px unreadable even enlarged"
+        if plain.matched and not rescued.matched:
+            raise RuntimeError(
+                "the zoom rescue LOST a phrase the plain read found - it must "
+                "only ever add answers, never replace a good one")
+
+    return f"{tag}, read {phrase!r} score={got.score:.2f}{extra}"
 
 
 def _check_legal() -> str:
@@ -278,7 +391,7 @@ def _check_starters() -> str:
             # A starter behind the paywall is a new user's first click into a
             # sales dialog, which is the opposite of what these are for.
             raise RuntimeError(f"{name!r} is not in the free tier")
-    return (f"{len(built)} starter flows, "
+    return (f"{len(built)} starter scripts, "
             f"{len(starters.free_starters())} in the free tier")
 
 

@@ -260,7 +260,7 @@ def check(graph) -> Tuple[bool, str, List[str]]:
     reasons = []
     if features:
         reasons.append(
-            f"This flow uses {_join(features)}, which "
+            f"This script uses {_join(features)}, which "
             f"{'are' if len(features) > 1 else 'is'} part of Macronaut Pro.")
     if over:
         reasons.append(

@@ -68,13 +68,54 @@ def _prove_the_real_installation_was_not_touched():
     than expected. The failure is silent and lands on the developer's own
     installation, so it is worth one stat() at each end to know.
     """
-    real = Path.home() / ".macronaut" / "settings.json"
-    before = real.stat().st_mtime_ns if real.exists() else None
+    real_dir = Path.home() / ".macronaut"
+
+    def _snapshot():
+        """Every file in the real data directory, by size and mtime.
+
+        ⚠ The whole directory, not just settings.json. This watched one file
+        until 12 September 2026, and the evidence that one is not enough was
+        sitting in the directory it was not watching: `update.log` on this
+        machine holds 332 lines written by `updater._log` during test runs on
+        31 July and 28 August, when `data_dir()` was not yet patched early
+        enough to catch it. `settings.json` was untouched throughout, so the
+        guard said nothing, correctly and uselessly.
+        """
+        if not real_dir.is_dir():
+            return None
+        out = {}
+        for p in real_dir.rglob("*"):
+            try:
+                if p.is_file():
+                    st = p.stat()
+                    out[str(p.relative_to(real_dir))] = (st.st_size, st.st_mtime_ns)
+            except OSError:
+                # A file that vanished mid-walk is not evidence of anything.
+                continue
+        return out
+
+    before = _snapshot()
     yield
-    after = real.stat().st_mtime_ns if real.exists() else None
-    assert before == after, (
-        f"the test suite wrote to {real} — the sandbox at the top of "
-        "conftest.py is no longer catching every route to it")
+    after = _snapshot()
+    if before is None or after is None:
+        return
+
+    touched = sorted(k for k in set(before) | set(after)
+                     if before.get(k) != after.get(k))
+    # ⚠ Two explanations, and the message has to offer both or it will be
+    # disbelieved the one time it is right. Widening this from settings.json to
+    # the whole directory also widened what a *running Macronaut* can trip: the
+    # app rewrites settings.json and appends to update.log on every run, so a
+    # developer with it open during a suite run would see this fire with the
+    # tests blamed for it. That is the failure mode the fixture below the
+    # sandbox exists to avoid, applied to this fixture.
+    assert not touched, (
+        f"files under {real_dir} changed during the run:\n  "
+        + "\n  ".join(touched[:20])
+        + "\n\nEither the sandbox at the top of conftest.py has stopped "
+          "catching a route to the real installation — which is what this "
+          "guard is for — or Macronaut itself was running while the suite "
+          "was. Check that before going looking for the leak.")
 
 
 @pytest.fixture(autouse=True, scope="session")
@@ -103,6 +144,51 @@ def _no_crash_consent_timer_may_mature_mid_suite():
     was, crash_ui.SEND_DELAY_MS = crash_ui.SEND_DELAY_MS, 24 * 60 * 60 * 1000
     yield
     crash_ui.SEND_DELAY_MS = was
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _no_live_update_check():
+    """Nothing in this suite may reach the network. Autouse.
+
+    ⚠ Measured 9 September 2026: one run of `tests/test_gui_offscreen.py`
+    attempted **20 live HTTPS requests to GitHub**. Not a hypothetical — the
+    PostToolUse hook runs this suite on every file save, so it was twenty
+    requests per edit, from a machine that never asked to check for updates.
+
+    `MainWindow.__init__` arms `QTimer.singleShot(4000, self._maybe_check_updates)`.
+    The suite builds many windows and runs far longer than four seconds, so
+    those shots mature and fire inside whichever unrelated test next pumps
+    events — the same shape as the crash-consent timer above, and as
+    `_offer_recovery` in test_gui_offscreen.py. Here the payload is a network
+    call rather than a modal, so it does not hang; it just quietly goes out.
+
+    ⚠ Blocked at `urllib.request.urlopen` — the actual door — and not at any
+    of the three tempting places above it. That took two wrong tries worth
+    recording, because each looked like "the boundary" until the tests said
+    otherwise:
+
+      * `_maybe_check_updates` is one caller. A guard there stops covering the
+        moment a second caller appears.
+      * `fetch_manifest` has its own web-host-to-API fallback, and two tests
+        exercise it; stubbing it made them assert against this guard's message
+        instead of the one they were written for.
+      * `updater._get` has the retry/backoff logic, and three more tests
+        exercise *that* by stubbing urlopen underneath it.
+
+    Every one of those layers is somebody's subject. `urlopen` is the only
+    thing that is nobody's subject and everybody's dependency. Tests that want
+    a specific network behaviour patch it themselves and their stub wins for
+    the duration, which is exactly right.
+    """
+    import urllib.request
+    real = urllib.request.urlopen
+
+    def _blocked(*a, **kw):
+        raise OSError("network disabled during tests (conftest)")
+
+    urllib.request.urlopen = _blocked
+    yield
+    urllib.request.urlopen = real
 
 
 @pytest.fixture(autouse=True, scope="session")

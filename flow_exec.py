@@ -9,8 +9,10 @@ to the UI via Qt signals.
 Detection / input logic is shared with the legacy linear player in recorder.py.
 """
 import os
+import math
 import time
 import ctypes
+import random
 import inspect
 from typing import List, Dict, Any, Optional
 
@@ -42,7 +44,20 @@ except Exception:
     _HAS_OCR = False
 
 
-_BTN = {"left": Button.left, "right": Button.right, "middle": Button.middle}
+# ⚠ Built by lookup, not written out: `Button.x1` exists on Windows and not
+# everywhere, and naming a missing member raises at import time. The two side
+# buttons are Back and Forward to the OS, Mouse 4 and Mouse 5 to anyone who
+# games with them; steps store them as "x1"/"x2". See flow.BUTTONS.
+_BTN = {}
+for _n in ("left", "right", "middle", "x1", "x2"):
+    _b = getattr(Button, _n, None)
+    if _b is not None:
+        _BTN[_n] = _b
+
+# Step kinds that can be performed with modifiers held down. Not `move` — a
+# ctrl-held mouse move is not a gesture anyone makes on purpose — and not
+# `autoclick`, whose whole point is to repeat one click as fast as it can.
+_MOD_POINTER_KINDS = ("click", "drag", "scroll")
 _color_tuple = flow.color_tuple  # shared with recorder.py
 
 
@@ -147,6 +162,20 @@ class FlowWorker(QObject):
             self._key_hold_s = max(0, int(getattr(SettingsManager(), "key_hold_ms", 60))) / 1000.0
         except Exception:
             self._key_hold_s = 0.06
+        # ── how the pointer gets anywhere ─────────────────────────────
+        # Read once, at construction, like key_hold_ms above: a run must not
+        # change speed halfway through because the Settings window was open.
+        self._smooth_mouse = True
+        self._travel_pps = flow.DEFAULT_TRAVEL_PPS
+        self._travel_human = False
+        try:
+            _s = input_backends._live_settings()
+            self._smooth_mouse = bool(getattr(_s, "smooth_mouse", True))
+            self._travel_pps = flow.travel_pps(getattr(_s, "mouse_travel_pps", None))
+            self._travel_human = bool(getattr(_s, "human_mode", False))
+        except Exception:
+            pass
+        self._travel_rng = random.Random()
         self._interp: Optional[flow.FlowInterpreter] = None
         # Keys a Hold-down node left pressed: name -> the parsed key object.
         # Keyed by *name* rather than by the parsed key because a backend may
@@ -414,16 +443,62 @@ class FlowWorker(QObject):
         if not step or not step.get("data", {}).get("enabled", True):
             return True
 
-        # Pre-step delay
-        delay = (float(step.get("delay_ms", 0)) / 1000.0) * self.speed_factor
+        kind = step.get("kind", "")
+        d = step.get("data", {})
+
+        # Pre-step delay, minus what the glide to this step's target is about
+        # to cost.
+        #
+        # ⚠ A recorded delay is the gap between one action and the next, and
+        # the hand spent that gap MOVING. Sleeping all of it and then gliding
+        # adds a journey the recording never contained: twenty clicks 200 ms
+        # apart replay as twenty times (200 ms + travel), so a sequence that
+        # took four seconds to record takes seven to play back. The drift is
+        # per-step and compounds, and it is at its worst in exactly the flows
+        # people record — a lot of clicks, some distance apart.
+        #
+        # `flow.travel_duration_ms` is what `_travel_to` paces itself by, so
+        # subtracting it here is not an estimate. If the glide is longer than
+        # the gap there is nothing to give back: the step runs when the
+        # pointer gets there, which is the best that can be done.
+        # ⚠ The whole gap, kept before the glide is taken out of it, because
+        # the glide is also capped BY it. The pointer travels at a fixed
+        # `mouse_travel_pps` and a hand does not, so a long jump between two
+        # quick clicks would otherwise take longer to replay than it took to
+        # perform — measured at +590 ms over ten clicks. `flow.travel_within`
+        # has the reasoning and the floor.
+        # ⚠ Tolerant, because a step's data is whatever is in the file and
+        # an exception here ends the whole run (see `run()`), leaving the
+        # mouse and keyboard wherever step 40 of 200 left them. "250" is
+        # read — a hand-edited file or a naive generator writes that, and
+        # it is unambiguous. None/""/[]/{} are not a duration and mean no
+        # wait. ⚠ inf does NOT raise, which is what makes it the dangerous
+        # one: it reaches `sleep(inf)`, whose deadline never arrives, and
+        # the flow stops dead with no error and nothing to look at.
+        try:
+            raw_delay = float(step.get("delay_ms", 0) or 0)
+        except (TypeError, ValueError):
+            raw_delay = 0.0
+        if not math.isfinite(raw_delay):
+            raw_delay = 0.0
+        delay = (raw_delay / 1000.0) * self.speed_factor
+        gap_ms = delay * 1000.0
+        delay -= self._travel_budget(kind, d) / 1000.0
+        # ...and the modifier presses, which happen after this sleep and before
+        # the action. A ctrl-click's ctrl went down during the gap the recorder
+        # measured, so the gap is what pays for it.
+        delay -= self._mods_budget(kind, d) / 1000.0
         if delay > 0:
             self.sleep(delay)
         if not self._running:
             return True
 
-        kind = step.get("kind", "")
-        d = step.get("data", {})
-
+        # Ctrl-click, Shift-click, Alt-drag, Shift-scroll: one gesture, and the
+        # modifier has to be down before the button goes down and still down
+        # when it comes up. See `flow.pointer_mods`.
+        mods = flow.pointer_mods(d) if kind in _MOD_POINTER_KINDS else ()
+        if mods:
+            self._press_mods(mods)
         try:
             if kind == "autoclick":
                 return self._do_autoclick(d, variables)
@@ -431,7 +506,8 @@ class FlowWorker(QObject):
             if kind == "click":
                 x, y = d.get("x", 0), d.get("y", 0)
                 btn = _BTN.get(d.get("button", "left"), Button.left)
-                self._mouse.position = (x, y)
+                if not self._travel_to(x, y, max_ms=gap_ms):
+                    return True          # stopped on the way; nothing to click
                 if d.get("hold"):
                     self._mouse.press(btn)
                     self.sleep(max(0, d.get("hold_ms", 1000)) / 1000.0)
@@ -441,14 +517,15 @@ class FlowWorker(QObject):
                 return True
 
             if kind == "move":
-                self._mouse.position = (d.get("x", 0), d.get("y", 0))
+                self._travel_to(d.get("x", 0), d.get("y", 0),
+                                max_ms=gap_ms)
                 return True
 
             if kind == "drag":
-                return self._do_drag(d)
+                return self._do_drag(d, gap_ms=gap_ms)
 
             if kind == "scroll":
-                return self._do_scroll(d)
+                return self._do_scroll(d, gap_ms=gap_ms)
 
             if kind in ("key", "combo"):
                 keys = d.get("keys", [])
@@ -576,8 +653,64 @@ class FlowWorker(QObject):
         except Exception as exc:
             self.error_occurred.emit(f"Action error: {exc}")
             return False
+        finally:
+            # ⚠ A `finally`, for the same reason a drag's release is one: a
+            # modifier left down by a failed or stopped step is worse than the
+            # step failing. Ctrl stuck down turns every later click in the
+            # flow into a ctrl-click, and every keystroke the user makes
+            # afterwards into a shortcut.
+            if mods:
+                self._release_mods(mods)
 
         return True
+
+    # ── modifiers held over a pointer action ──────────────────────────
+    def _mods_budget(self, kind: str, d: dict) -> float:
+        """How many ms `_press_mods` is about to spend for this step.
+
+        ⚠ Deliberately separate from `_travel_budget` rather than folded into
+        it. That one returns 0 when smooth movement is switched off, and a
+        modifier still has to be pressed and still costs a key-hold there — on
+        the setting chosen by exactly the people who care most about the rate.
+
+        Counts only the modifiers that will really be pressed: `_press_mods`
+        leaves alone anything a Hold-down node is already holding, and charging
+        the gap for a press that never happens would land the step early.
+        """
+        if kind not in _MOD_POINTER_KINDS:
+            return 0.0
+        n = sum(1 for m in flow.pointer_mods(d)
+                if m not in self._held and parse_key(m) is not None)
+        return n * self._key_hold_s * 1000.0
+
+    def _press_mods(self, mods) -> None:
+        """Hold `mods` down, skipping any the flow is already holding.
+
+        A modifier that was already down is left alone and left OUT of the
+        release below — a Hold-down node holding Shift for a sprint must not
+        be cancelled by a shift-click that happens during it.
+        """
+        for m in mods:
+            key = parse_key(m)
+            if key is None or m in self._held:
+                continue
+            try:
+                self._kb.press(key)
+            except Exception:
+                continue
+            self._held[m] = key
+            self._held_by[m] = self._cur_node or ""
+            _HOLDERS.add(self)
+            # Same reason as a multi-key step: let a receiver that polls once
+            # a frame see the modifier before the button arrives.
+            self.sleep(self._key_hold_s)
+        self._emit_held()
+
+    def _release_mods(self, mods) -> None:
+        mine = [m for m in mods if self._held_by.get(m) == (self._cur_node or "")]
+        if mine:
+            self._release_keys(mine)
+            self._emit_held()
 
     # ── auto-click node (ported from clicker.ClickWorker) ─────────────
     def _autoclick_focus_ok(self, focus_window: str) -> bool:
@@ -605,7 +738,150 @@ class FlowWorker(QObject):
         except Exception:
             return False
 
-    def _do_drag(self, d: dict) -> bool:
+    # ── pointer travel ────────────────────────────────────────────────
+    #
+    # Which step kinds begin by putting the pointer somewhere, and where. A
+    # scroll only travels when it names a position — `at_cursor` is the
+    # default and means "whatever is under the pointer" — and a drag's entry
+    # is the approach to its start point, not the drag itself, which is paced
+    # by its own duration_ms and is part of the gesture rather than the gap
+    # before it.
+    _TRAVELS_TO = {
+        "click": lambda d: (d.get("x", 0), d.get("y", 0)),
+        "move":  lambda d: (d.get("x", 0), d.get("y", 0)),
+        "drag":  lambda d: (d.get("x", 0), d.get("y", 0)),
+        "scroll": lambda d: (None if d.get("at_cursor", True)
+                             else (d.get("x", 0), d.get("y", 0))),
+    }
+
+    def _travel_budget(self, kind: str, d: dict) -> float:
+        """How many ms the glide into this step is about to cost. 0 if none.
+
+        Deliberately silent about every kind that is not in `_TRAVELS_TO`: a
+        detect-then-click cannot be predicted (it does not know where it is
+        going until it has searched), and an auto-click node re-aims within
+        the snap distance and pays nothing to begin with.
+        """
+        if not self._smooth_mouse:
+            return 0.0
+        target = self._TRAVELS_TO.get(kind)
+        if target is None:
+            return 0.0
+        try:
+            target = target(d)
+            if target is None:
+                return 0.0
+            cx, cy = self._mouse.position
+            dist = ((int(target[0]) - cx) ** 2 + (int(target[1]) - cy) ** 2) ** 0.5
+        except Exception:
+            return 0.0
+        if dist <= flow.TRAVEL_SNAP_PX:
+            return 0.0          # a snap, not a journey — see `_travel_to`
+        ms = flow.travel_duration_ms(dist, self._travel_pps)
+        if kind == "drag":
+            # ⚠ A drag always settles on arrival before the button goes down —
+            # `_do_drag` is settle-press-settle-travel-settle-release, three of
+            # them, and `flow.drag_total_ms` counts only the two inside the
+            # gesture. The arrival settle belongs to getting there, so it comes
+            # out of the gap like the glide does; unbudgeted it was added on
+            # top of a gap already spent, and every recorded drag replayed one
+            # settle late.
+            ms += flow.DRAG_SETTLE_MS
+        return ms
+
+    def _travel_to(self, x, y, human: Optional[bool] = None,
+                   snap_px: Optional[float] = None,
+                   max_ms: Optional[float] = None) -> bool:
+        """Glide the pointer to (x, y). Returns False if Stop cut it short.
+
+        ⚠ Every step that puts the cursor somewhere goes through here rather
+        than assigning `self._mouse.position` directly, and that is the whole
+        fix: a single assignment is a teleport, and a receiver sampling the
+        pointer once a frame sees the cursor at the target having never been on
+        the way to it. Hover states never fire, a menu that opens on
+        mouse-enter is still closed when the click lands, and the motion is one
+        no hand can make. `flow.travel_path` has the shape and the reasoning.
+
+        The final point is always exactly the target, so a step that aims at a
+        pixel still lands on it. Real time, not scaled by `speed_factor` —
+        travelling is part of the gesture, like a drag's own travel.
+        """
+        tx, ty = int(x), int(y)
+        if not self._smooth_mouse:
+            self._mouse.position = (tx, ty)
+            return self.running()
+        try:
+            cx, cy = self._mouse.position
+            start = (int(cx), int(cy))
+        except Exception:
+            # A backend that cannot report where the cursor is cannot be glided
+            # from. Land on the target rather than refusing to click at all.
+            self._mouse.position = (tx, ty)
+            return self.running()
+
+        # ⚠ `snap_px` is not a nicety. The auto-click node re-aims by a few
+        # pixels of jitter on every single iteration, and a glide has a floor
+        # of MIN_TRAVEL_MS — gliding those hops would have capped a "max speed"
+        # clicker at ~25 CPS, which is the one number that face exists to
+        # deliver. A hop shorter than this is a teleport, and at that size the
+        # distinction the rest of this method is about does not exist.
+        snap = flow.TRAVEL_SNAP_PX if snap_px is None else float(snap_px)
+        if ((tx - start[0]) ** 2 + (ty - start[1]) ** 2) ** 0.5 <= snap:
+            self._mouse.position = (tx, ty)
+            return self.running()
+
+        # ⚠ The rng goes in on every glide, not only in human mode. An exactly
+        # straight, exactly eased path is its own signature, and the standard
+        # amplitudes in `flow` are small enough to be invisible on screen;
+        # human mode widens them rather than switching them on.
+        use_human = self._travel_human if human is None else bool(human)
+        path = flow.travel_path(start, (tx, ty), pps=self._travel_pps,
+                                rng=self._travel_rng, human=use_human)
+        # ⚠ The path's *shape* is left alone and only its pacing is capped, so
+        # a compressed glide is the same journey walked faster rather than a
+        # coarser one with points dropped out of it. See `flow.travel_within`
+        # for why a recorded gap is allowed to overrule the settings' speed.
+        #
+        # That does mean a hard-compressed glide emits moves well above
+        # TRAVEL_HZ, and the question was measured rather than left open:
+        # 1500 px capped to 40 ms is 60 points at ~1490/s against the designed
+        # 120, and it still lands in 40.3 ms — the deadline idiom absorbs it.
+        # Left alone deliberately. The points are cursor *position*, which a
+        # receiver reads as state rather than consuming as events, so the extra
+        # ones are sampled away unread (`flow.drag_moves` makes the same
+        # argument); dropping to one-per-frame would give a 40 ms glide about
+        # five points, and a coarser path is the failure the glide exists to
+        # prevent. If a backend is ever slow enough per move that the glide
+        # overruns, cut the point count — not the pacing.
+        duration_ms = flow.travel_duration_ms(
+            ((tx - start[0]) ** 2 + (ty - start[1]) ** 2) ** 0.5,
+            self._travel_pps)
+        if max_ms is not None:
+            duration_ms = flow.travel_within(duration_ms, max_ms)
+        period = (duration_ms / 1000.0 / len(path)) if path else 0.0
+        # ⚠ The wait comes BEFORE each move, and every move gets one including
+        # the last. Sleeping after them and skipping the final wait made a
+        # glide finish one period early — a flat ~8 ms at TRAVEL_HZ 120,
+        # whatever the distance, on a journey `do_action` had already
+        # subtracted the full duration for. Small, constant, always the same
+        # direction, so it accumulated across every travelling step.
+        deadline = time.perf_counter()
+        for pt in path:
+            if not self.running():
+                # Stop lands mid-glide: leave the cursor where it got to rather
+                # than finishing a journey nobody is waiting for.
+                return False
+            if period:
+                # Same deadline idiom as dragging, scrolling and typing: spend
+                # the gap as "wait until this move's slot is up", so two sleep
+                # overshoots per move do not accumulate into a glide that takes
+                # half again as long as it says it does.
+                deadline += period
+                self.sleep(max(0.0, deadline - time.perf_counter()))
+            self._mouse.position = pt
+        return True
+
+    def _do_drag(self, d: dict, gap_ms: Optional[float] = None) -> bool:
         """Press at one point, travel there while held, release at the other.
 
         The shape is settle-press-settle-travel-settle-release, and every one of
@@ -629,7 +905,15 @@ class FlowWorker(QObject):
         # gesture takes the time the editor asked for whatever the count is.
         period = (flow.drag_duration_ms(d) / 1000.0 / len(path)) if path else 0.0
 
-        self._mouse.position = (int(d.get("x", 0) or 0), int(d.get("y", 0) or 0))
+        # Getting TO the start is a glide of its own; the travel between the
+        # two points below is the drag proper and keeps its own pacing.
+        # The settle below is part of arriving, so the glide gets the gap
+        # minus it — see `_travel_budget`, which budgets the pair together.
+        approach = (None if gap_ms is None
+                    else max(0.0, gap_ms - flow.DRAG_SETTLE_MS))
+        if not self._travel_to(int(d.get("x", 0) or 0),
+                               int(d.get("y", 0) or 0), max_ms=approach):
+            return False
         self.sleep(settle)
         if not self.running():
             return False
@@ -656,7 +940,7 @@ class FlowWorker(QObject):
             self._release_mouse()
         return True
 
-    def _do_scroll(self, d: dict) -> bool:
+    def _do_scroll(self, d: dict, gap_ms: Optional[float] = None) -> bool:
         """Turn the wheel `amount` notches, optionally somewhere in particular.
 
         The cursor is moved first when the step names a position, because the
@@ -673,8 +957,9 @@ class FlowWorker(QObject):
         wrong for scrolling a list to its end.
         """
         if not d.get("at_cursor", True):
-            self._mouse.position = (int(d.get("x", 0) or 0),
-                                    int(d.get("y", 0) or 0))
+            if not self._travel_to(int(d.get("x", 0) or 0),
+                                   int(d.get("y", 0) or 0), max_ms=gap_ms):
+                return False
         dx, dy = flow.scroll_vector(d)
         n = flow.scroll_notches(d)
         cps = flow.scroll_cps(d)
@@ -745,7 +1030,14 @@ class FlowWorker(QObject):
                 x = max(rx, min(rx + rw - 1, x))
                 y = max(ry, min(ry + rh - 1, y))
             if use_fixed:
-                self._mouse.position = (x, y)
+                # First pass travels; after that the pointer is already there
+                # and travel_path collapses to a single move (TRAVEL_SNAP_PX),
+                # so this costs a click rate nothing on the first iteration.
+                if not self._travel_to(
+                        x, y, human=human,
+                        snap_px=2 * jitter_px + flow.TRAVEL_SNAP_PX
+                        if human else None):
+                    break
 
             if click_type == "single":
                 self._mouse.click(button)
@@ -1029,6 +1321,16 @@ class FlowWorker(QObject):
 
     # ── physical click (multi-monitor / mixed-DPI safe) ───────────────
     def _click_physical(self, phys_x, phys_y, screenshot, btn_str="left", clicks=1):
+        """Click a point given in SCREENSHOT pixels — what Detect steps find.
+
+        Goes straight to SendInput rather than through `self._mouse` because
+        the absolute-normalised form is the only one that is right across
+        monitors of different DPI. The pointer still travels: a detected button
+        is exactly the kind of target that is watching for a cursor arriving,
+        and half the reason a found-and-clicked control did nothing was a
+        teleport landing on a button that had never been hovered. Same path
+        model as `_travel_to`, sent through this method's own move events.
+        """
         u32 = ctypes.windll.user32
         vd_x = u32.GetSystemMetrics(76); vd_y = u32.GetSystemMetrics(77)
         vd_w = u32.GetSystemMetrics(78); vd_h = u32.GetSystemMetrics(79)
@@ -1036,8 +1338,15 @@ class FlowWorker(QObject):
         scale_y = screenshot.height / vd_h
         lx = vd_x + phys_x / scale_x
         ly = vd_y + phys_y / scale_y
-        norm_x = int((lx - vd_x) * 65535 / (vd_w - 1))
-        norm_y = int((ly - vd_y) * 65535 / (vd_h - 1))
+
+        def norm(px, py):
+            return (int((px - vd_x) * 65535 / (vd_w - 1)),
+                    int((py - vd_y) * 65535 / (vd_h - 1)))
+
+        norm_x, norm_y = norm(lx, ly)
+
+        class POINT(ctypes.Structure):
+            _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
 
         class MOUSEINPUT(ctypes.Structure):
             _fields_ = [("dx", ctypes.c_long), ("dy", ctypes.c_long),
@@ -1049,19 +1358,60 @@ class FlowWorker(QObject):
             _fields_ = [("type", ctypes.c_ulong), ("mi", MOUSEINPUT)]
 
         MOVE = 0x0001 | 0x8000 | 0x4000
-        _DOWN = {"left": 0x0002, "right": 0x0008, "middle": 0x0020}
-        _UP = {"left": 0x0004, "right": 0x0010, "middle": 0x0040}
+        # ⚠ The X buttons are one flag pair for both of them; WHICH one is
+        # carried in mouseData, not in the flag. Sending XDOWN with mouseData
+        # left at 0 presses neither, silently — the event goes out and nothing
+        # happens, which is the failure mode this whole file is about.
+        _DOWN = {"left": 0x0002, "right": 0x0008, "middle": 0x0020,
+                 "x1": 0x0080, "x2": 0x0080}
+        _UP = {"left": 0x0004, "right": 0x0010, "middle": 0x0040,
+               "x1": 0x0100, "x2": 0x0100}
+        _XDATA = {"x1": 1, "x2": 2}          # XBUTTON1 / XBUTTON2
+        x_data = _XDATA.get(btn_str, 0)
         d_flag = _DOWN.get(btn_str, 0x0002) | 0x8000 | 0x4000
         u_flag = _UP.get(btn_str, 0x0004) | 0x8000 | 0x4000
 
-        def mk(flags):
+        def mk(flags, nx=None, ny=None, data=0):
             inp = INPUT(); inp.type = 0
-            inp.mi.dx = norm_x; inp.mi.dy = norm_y; inp.mi.mouseData = 0
+            inp.mi.dx = norm_x if nx is None else nx
+            inp.mi.dy = norm_y if ny is None else ny
+            inp.mi.mouseData = data
             inp.mi.dwFlags = flags; inp.mi.time = 0; inp.mi.dwExtraInfo = None
             return inp
 
-        u32.SendInput(1, ctypes.byref(mk(MOVE)), ctypes.sizeof(INPUT))
+        def send(inp):
+            u32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT))
+
+        # The journey, in LOGICAL virtual-desktop coords — the same units
+        # GetCursorPos answers in, and what `norm` converts from.
+        path = [(lx, ly)]
+        period = 0.0
+        if self._smooth_mouse:
+            try:
+                pt = POINT()
+                if u32.GetCursorPos(ctypes.byref(pt)):
+                    dist = ((lx - pt.x) ** 2 + (ly - pt.y) ** 2) ** 0.5
+                    path = flow.travel_path(
+                        (pt.x, pt.y), (lx, ly), pps=self._travel_pps,
+                        rng=self._travel_rng, human=self._travel_human)
+                    period = (flow.travel_duration_ms(dist, self._travel_pps)
+                              / 1000.0 / len(path)) if path else 0.0
+            except Exception:
+                path = [(lx, ly)]      # can't ask where it is → go there
+
+        deadline = time.perf_counter()
+        for i, (px, py) in enumerate(path):
+            if not self.running() and i:
+                return          # Stop landed mid-glide: no click at the far end
+            nx, ny = norm(px, py)
+            send(mk(MOVE, nx, ny))
+            if period and i < len(path) - 1:
+                deadline += period
+                self.sleep(max(0.0, deadline - time.perf_counter()))
+        # Settle before pressing: the arrival and the button-down must not land
+        # in the same frame, or a receiver reads a click on whatever was under
+        # the pointer when it started moving. Same reason as DRAG_SETTLE_MS.
         time.sleep(0.05)
         for _ in range(max(1, clicks)):
-            u32.SendInput(1, ctypes.byref(mk(d_flag)), ctypes.sizeof(INPUT))
-            u32.SendInput(1, ctypes.byref(mk(u_flag)), ctypes.sizeof(INPUT))
+            send(mk(d_flag, data=x_data))
+            send(mk(u_flag, data=x_data))

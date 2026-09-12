@@ -236,9 +236,11 @@ def test_stopping_between_the_colour_and_grey_passes_is_noticed(haystack):
     seen = []
     real = matcher._best_match_cv2
 
-    def counting(hay, needle, scales, grayscale, should_continue=None):
+    # **kw so this stays a stand-in rather than a second signature to keep in
+    # step: it is here to count the passes, not to restate the argument list.
+    def counting(hay, needle, scales, grayscale, should_continue=None, **kw):
         seen.append(grayscale)
-        return real(hay, needle, scales, grayscale, should_continue)
+        return real(hay, needle, scales, grayscale, should_continue, **kw)
 
     import pytest as _pytest
     mp = _pytest.MonkeyPatch()

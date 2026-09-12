@@ -93,11 +93,44 @@ thing simply is not on screen. An If / Else was worse: it just kept taking the
 same branch, so the flow looked like it was working. The run log names the file
 now, once, when the step starts.
 
+**The pointer now travels to what it clicks, instead of appearing on it.**
+Every click Macronaut made used to be a teleport: the cursor was in one place,
+and in the next instant it was on the target with the button already going down.
+It had never been anywhere in between.
+
+For most windows that is fine. For a great many it is not, and the failure is
+silent. A program that reads the mouse once per frame works out what happened
+from where the pointer has *been* — so a cursor that materialises on a button
+having never approached it leaves the hover state unfired, and a menu that opens
+when the mouse enters it is still closed when the click lands. The click goes to
+whatever was underneath, which is usually nothing, and nothing reports an error,
+because a click cannot fail.
+
+If you have ever had a flow click exactly the right spot and watched nothing
+happen, this is a good candidate for why.
+
+Clicks, moves, drags and scrolls all travel now, and so does **click what you
+found** — the Detect step that clicks the text or image it just located on
+screen, which is the one where it mattered most. The motion is the one a hand
+makes: away from the mark quickly, then slowing onto the target. It always
+arrives exactly on the pixel it was aiming at.
+
+**Settings ▸ Pointer movement** has the switch and a travel speed, if you would
+rather have the old behaviour: turn it off and clicks jump straight there, which
+is the fastest thing the machine can do and is the right choice for a target
+that does not care where the cursor came from. Crossing a full 1080p screen at
+the default speed takes about two thirds of a second; short hops are quicker,
+and a few pixels is still instant.
+
+Your click rate is not affected. The auto-clicker holds position between clicks,
+so there is nothing to travel — "max speed" is exactly as fast as it was.
+
 ## Also
 
-- Beyond the speed-up above, nothing changed about what flows *do* when they
-  run, record or play back. Every step behaves as it did; some of them finish
-  sooner.
+- Apart from the pointer travelling, nothing changed about what flows *do*
+  when they run, record or play back. Every step clicks, types and waits where
+  it did before; some of them finish sooner, and the ones that move the mouse
+  take the scenic route to the same place.
 - Some internal tidying: two imports the app had stopped using are gone, and
   several pieces of code that no longer run now say so, so that anyone reading
   the source is not misled about which parts are live.

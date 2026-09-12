@@ -138,3 +138,59 @@ def test_sha512_is_what_the_spec_says():
     """A sanity check on the hash, because a wrong digest would still produce a
     verifier that is perfectly self-consistent and rejects every real key."""
     assert hashlib.sha512(b"abc").hexdigest().startswith("ddaf35a1")
+
+
+# ── the writing side that stayed here ──────────────────────────────────
+#
+# ⚠ `encode_point` is the one piece of the signing side kept in `ed25519.py`,
+# and its docstring says why: it is curve arithmetic, it belongs beside the
+# decoder it must round-trip with, and "test_ed25519.py can only check that
+# round trip if both halves are in one module". Until 12 September 2026 this
+# file did not check it.
+#
+# ⚠ That was not only a coverage gap. `encode_point`'s only caller is
+# `tools/mint_license.py`, which `publish_source.PRIVATE` withholds — so
+# `test_no_new_public_code_becomes_unreachable` found the reference here and
+# could not find it in a public clone, and the published repo's own suite went
+# red on a clean checkout while passing on every machine that could see the
+# private half. Found by building the publishable tree into a temp directory
+# and running the suite there, which is the check CLAUDE.md prescribes.
+#
+# So these two tests are the fix for both: real coverage of a signer
+# primitive, and a reference that exists in the tree people actually clone.
+
+
+def test_encode_point_derives_the_rfc_8032_public_key():
+    """The encoder agrees with the spec, not merely with our own decoder.
+
+    A round trip alone cannot catch a consistently wrong encoding — flip the
+    sign bit in both halves and every round trip still passes while every key
+    minted is unverifiable by anything else. RFC 8032 §7.1 vector 1 gives a
+    secret key and the public key it must produce, so this pins the encoder to
+    the standard.
+    """
+    seed = _h("9d61b19deffd5a60ba844af492ec2cc4"
+             "4449c5697b326919703bac031cae7f60")
+    expected = _h("d75a980182b10ab7d54bfed3c964073a"
+                 "0ee172f3daa62325af021a68f707511a")
+
+    # The standard derivation: SHA-512 the seed, clamp the low half.
+    a = int.from_bytes(hashlib.sha512(seed).digest()[:32], "little")
+    a &= (1 << 254) - 8
+    a |= 1 << 254
+
+    assert ed25519.encode_point(ed25519._mul(ed25519.B, a)) == expected
+
+
+@pytest.mark.parametrize("k", [1, 2, 12345, 0xDEADBEEF, ed25519.L - 1])
+def test_encode_and_decode_are_inverses(k):
+    """[k]B survives the compressed form and comes back the same point.
+
+    `L - 1` is in the list on purpose: it is the largest scalar in the
+    subgroup, and an encoder that mishandles the sign bit packed into the top
+    bit of y tends to fail at the edges rather than in the middle.
+    """
+    point = ed25519._mul(ed25519.B, k)
+    decoded = ed25519._decode_point(ed25519.encode_point(point))
+    assert decoded is not None, f"[{k}]B did not survive encode/decode"
+    assert ed25519._equal(decoded, point)

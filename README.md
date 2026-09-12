@@ -16,8 +16,8 @@
 them together — that is the whole language.</em></p>
 
 A Windows autoclicker and input-automation app built with Python and PySide6 (Qt 6).
-The **Sequence** tab is the centrepiece — a friendly builder for recording and
-hand-crafting multi-step automations — backed by a classic single-point
+The **Advanced** face is the centrepiece — a node canvas for recording and
+hand-crafting multi-step scripts — backed by a classic single-point
 **Basic** auto-clicker.
 
 A modern dark **indigo** theme (with an instant light mode), the Windows system
@@ -71,18 +71,26 @@ This is what opens if all you wanted was an auto clicker.</em></p>
 The **Click** step on the canvas adds the rest: the middle button, double-click
 and hold-down with an adjustable hold duration.
 
-### Sequence builder
-- Record live mouse clicks and keystrokes into a replayable sequence
+### Script builder
+- Record live mouse clicks and keystrokes into a replayable script
   - Modifier chords (e.g. **Ctrl+C**) are captured as a single combo step
   - Rapid same-spot clicks are merged into a double-click step
-- One-click action palette: add **Click / Key-or-Combo / Type Text / Wait / Wait-for-Image** steps
-- **Drag-and-drop reorder**, or use Move Up / Down
-- **Enable / disable** individual steps with a checkbox — skip them without deleting
-- **Duplicate**, **copy / paste** (Ctrl+C / Ctrl+V) and **Test this step** from the right-click menu
-- Double-click any step to edit it; per-step delay captured on record or set manually
-- Live footer summary: step count, active steps, and estimated runtime per loop / total
-- Save and load sequences to / from JSON files
-- Loop a set number of times or infinitely, with a playback speed multiplier (0.1× – 10×)
+- Nine-node palette — **Click**, **Type**, **Wait**, **Detect**, **If / Else**,
+  **Loop**, **Go to**, **End**, **Comment** — click one to add it, or drag it onto
+  the canvas to place it
+- **Drag nodes anywhere on the canvas** — the order comes from the wires between them
+- **Edit**, **Name**, **Duplicate** (Ctrl+D) and **copy / paste** (Ctrl+C / Ctrl+V) from the right-click menu
+- Double-click a node to edit it; double-click a wire to put a bend in, and the
+  bend again to take it out. Per-node delay captured on record or set manually
+- **Timeline strip** under the canvas: one box per node in run order, widths
+  proportional to how long each takes — exact where a setting decides it,
+  measured once this machine has timed it, an outlined ceiling for a Detect's
+  timeout, hatched where nothing is known yet. A key held down shows as a bar
+  spanning every node it is held across, so an unreleased key is visible before
+  you press Play
+- Save and load scripts to / from JSON files
+- Loop a set number of times or infinitely, with **0.5× / 1× / 2× / 5×** presets and a
+  custom playback speed from 0.1× to 50×
 - Keyboard shortcuts: **Del** delete · **Ctrl+D** duplicate · **Ctrl+C/V** copy/paste
 
 ### Hotkeys & triggers
@@ -90,18 +98,20 @@ and hold-down with an adjustable hold duration.
   the START/STOP button and tray menu always show the currently bound key
 - Holding the hotkey fires once, not repeatedly (no start/stop flicker)
 - Optional second "trigger" key that also starts/stops
-- **Image trigger** (Basic tab): wait until a target screenshot appears on screen before
+- **Image trigger** (Basic face): wait until a target screenshot appears on screen before
   clicking begins (requires `opencv-python`; the option is disabled with a note if it isn't installed)
-- **Wait-for-Image** step (Sequence tab): pause until an image appears, then optionally click it
+- **Wait-for-Image** step (in the builder): pause until an image appears, then optionally click it
 
 ### Smart features
-- **Human mode** (Basic tab): randomised intervals and a few pixels of cursor jitter per click
+- **Human mode** (Basic face): randomised intervals and a few pixels of cursor jitter per click
 - **Click region constraint**: draw a bounding box on screen; clicks stay inside it
 - **Auto-pause on focus loss**: pause automatically when your chosen window isn't focused (needs `pywin32`)
-- **Key blacklist**: any key listed here is never sent during sequence playback — a safety net for keys like Win or Alt+F4
+- **Key blacklist**: any key listed here is never sent during script playback — a safety net for keys like Win or Alt+F4
 
 ### Interface
-- Four-tab layout: **Sequence / Basic / Settings / Stats** (Sequence is the default)
+- Two faces — **Basic** and **Advanced** — switched with the **Advanced ›** and
+  **‹ Basic** links; **Settings** and **Stats** live behind the gear. The app
+  reopens on whichever face you used last
 - Responsive layout that adapts to small / non-maximised windows
 - Context-aware fields — only the inputs relevant to your current selection stay enabled
 - Live click counter, keystroke counter, elapsed time, and CPS in the status bar
@@ -187,18 +197,18 @@ requires no Python installation to run. To brand the executable, run
 
 ## Quick-start guide
 
-1. **Sequences** — the app opens on the **Sequence** tab. Click **⏺ Record** to capture
-   live input, or use the left-hand palette to add steps. Drag rows to reorder, toggle a
-   checkbox to enable/disable a step, then press **▶ Play**.
-2. **Basic clicking** — switch to the **Basic** tab, set button / action / interval / position,
+1. **Scripts** — open the builder with **Advanced ›**. Click **⏺ Record** to capture
+   live input, or use the left-hand palette to add nodes. Drag nodes to arrange them and
+   wire them together for order, then press **▶ Play**.
+2. **Basic clicking** — go back with **‹ Basic**, set button / action / interval / position,
    then click **START** (or press **F8**).
 3. **Fixed position** — choose *A fixed point on screen*, click **Pick a point on screen**,
    and hover the target; the position is captured after a 3-second countdown.
 4. **Hotkey** — default is **F8** and works even when minimised. Change it in
    **Settings → Hotkeys**; the button and tray labels update to match.
-5. **Human mode** — enable in the **Basic** tab to add timing variation and cursor jitter.
+5. **Human mode** — enable on the **Basic** face to add timing variation and cursor jitter.
 6. **Region constraint** — in **Settings**, click *Select region on screen…* and drag a rectangle.
-7. **Image trigger** — in the **Basic** tab, tick *Only start once a target image is on screen*,
+7. **Image trigger** — on the **Basic** face, tick *Only start once a target image is on screen*,
    then browse to or capture a PNG/JPEG template.
 
 ---
@@ -207,10 +217,10 @@ requires no Python installation to run. To brand the executable, run
 
 ```
 Macronaut/
-├── main.py          Entry point, all UI tabs, single global hotkey listener
+├── main.py          Entry point, both UI faces, single global hotkey listener
 ├── clicker.py       Mouse click automation engine (QThread worker)
 ├── keystrokes.py    Key-name tables and conversion/display helpers
-├── recorder.py      Live sequence recorder and playback engine
+├── recorder.py      Live script recorder and playback engine
 ├── settings.py      Persistent JSON settings (stored in ~/.macronaut/)
 ├── stats.py         CPS/KPS tracking and persistent session history
 ├── tray.py          System-tray icon

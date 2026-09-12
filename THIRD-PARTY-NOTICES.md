@@ -75,16 +75,33 @@ own licence. Only the MIT-licensed `interception-python` binding is bundled.
 | Component | Version | License |
 |---|---|---|
 | pyautogui | 0.9.54 | BSD 3-Clause |
+| PyMsgBox | 2.0.1 | BSD 3-Clause in the file, GPLv3+ in the metadata — see below |
 | PyScreeze | 1.0.1 | MIT |
 | PyGetWindow | 0.0.9 | BSD 3-Clause |
+| PyRect | 0.2.0 | BSD 3-Clause |
 | pytweening | 1.2.0 | MIT |
 | pyperclip | 1.11.0 | BSD 3-Clause |
 | opencv-python (OpenCV) | 4.13.0.92 | Apache 2.0 |
+| numpy | 2.4.4 | BSD-3-Clause AND 0BSD AND MIT AND Zlib |
 | Pillow | 12.2.0 | MIT-CMU (HPND) |
 | pywin32 | 311 | Python Software Foundation License |
 | winrt-runtime + winrt-Windows.* | 3.2.1 | MIT |
 | interception-python | 1.13.6 | MIT |
 | six | 1.17.0 | MIT |
+| typing-extensions | 4.15.0 | PSF-2.0 |
+
+⚠ **`PyMsgBox` and `numpy` were missing from this table until 12 September
+2026, and both ship.** `numpy` is the larger omission by far: `macronaut.spec`
+says in as many words that it must not be excluded, because `cv2` imports it,
+and its OpenBLAS DLL is about 6.5 MB of the download. `PyMsgBox` arrives at
+`import pyautogui` — verified, not assumed — and nothing excludes it.
+
+⚠ **`PyMsgBox` carries the same `GPLv3+` classifier as the excluded
+`mouseinfo`**, while its own licence text is BSD 3-Clause; Al Sweigart's
+packages are inconsistent about this. It is kept rather than excluded, and the
+reason is the one that changed on 30 August 2026: Macronaut is GPL-3.0-or-later
+itself, so GPLv3+ is simply compatible. `mouseinfo` stays excluded for weight,
+not licence — as the copyleft section above already says.
 
 Windows OCR (`Windows.Media.Ocr`) is part of Windows and is used through the
 system, not redistributed.
@@ -112,7 +129,7 @@ Regenerate the licence facts rather than trusting this table after a
 dependency bump:
 
 ```bash
-python -c "import importlib.metadata as md; [print(n, md.version(n), md.metadata(n).get('License') or md.metadata(n).get('License-Expression'), [c for c in (md.metadata(n).get_all('Classifier') or []) if 'Licen' in c]) for n in ['PySide6','shiboken6','pynput','pyautogui','opencv-python','Pillow','pywin32','winrt-runtime','winrt-Windows.Media.Ocr','interception-python','PyScreeze','PyGetWindow','pytweening','pyperclip','six']]"
+python -c "import importlib.metadata as md; [print(n, md.version(n), md.metadata(n).get('License') or md.metadata(n).get('License-Expression'), [c for c in (md.metadata(n).get_all('Classifier') or []) if 'Licen' in c]) for n in ['PySide6','shiboken6','pynput','pyautogui','opencv-python','Pillow','pywin32','winrt-runtime','winrt-Windows.Media.Ocr','interception-python','PyScreeze','PyGetWindow','pytweening','pyperclip','six','numpy','PyMsgBox','PyRect','typing-extensions']]"
 ```
 
 *Compiled from installed package metadata, not from memory. It is a

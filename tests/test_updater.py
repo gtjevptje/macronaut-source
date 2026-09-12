@@ -461,10 +461,16 @@ def test_manifest_written_by_release_is_readable_by_updater(tmp_path):
         "sha256": hashlib.sha256(exe.read_bytes()).hexdigest(),
         "size": exe.stat().st_size,
         "notes": "Fixed things",
+        # ⚠ Kept on purpose. `mandatory` was retired on 12 September 2026, but
+        # every update.json already published carries it, and an installed 2.3.x
+        # keeps reading manifests forever. parse_manifest must go on ignoring
+        # unknown keys rather than raising, or retiring a field would break the
+        # updater in exactly the copies that cannot be updated to fix it.
         "mandatory": False,
         "published": "2026-07-30",
     }
     info = updater.parse_manifest(json.loads(json.dumps(manifest)))
+    assert not hasattr(info, "mandatory")
     assert info.version == "2.0.1"
     assert version.is_newer(info.version, "2.0.0")
     updater.verify(exe, info)
@@ -574,3 +580,27 @@ def test_publish_refuses_a_manifest_that_does_not_describe_the_exe(tmp_path,
     monkeypatch.setattr(release.shutil, "which", lambda _n: "gh")
     with pytest.raises(SystemExit):
         release.publish("2.0.1")
+
+
+# ── the suite must not phone home ────────────────────────────────────────────
+
+def test_the_suite_cannot_reach_the_network():
+    """⚠ Wiring, for the `_no_live_update_check` guard in conftest.
+
+    Measured 9 September 2026 before it existed: one run of
+    `tests/test_gui_offscreen.py` made **20 live HTTPS requests to GitHub**,
+    counted at `urllib.request.urlopen`. `MainWindow` arms a four-second
+    single-shot update check, the suite builds many windows and runs far longer
+    than four seconds, and the PostToolUse hook runs the suite on every file
+    save — so it was twenty requests per edit from a machine that never asked.
+    With the guard: zero.
+
+    ⚠ Asserted by identity, not by behaviour. The obvious version — call it and
+    require `UpdateError` — passes just as well on a machine that is simply
+    offline, which is the one place this guard is least needed and most likely
+    to be believed.
+    """
+    import urllib.request
+    assert getattr(urllib.request.urlopen, "__name__", "") == "_blocked", (
+        "conftest's network guard is not installed — the suite can make real "
+        "requests to GitHub. See _no_live_update_check.")

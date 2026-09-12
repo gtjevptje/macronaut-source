@@ -507,7 +507,7 @@ class CompactFace(QWidget):
         self._scripts.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self._scripts.currentTextChanged.connect(self._on_script_changed)
         self._rec = QPushButton("●"); self._rec.setObjectName("iconBtn")
-        self._rec.setToolTip("Record a macro (F8/Esc to stop)")
+        self._rec.setToolTip("Record a script (F8/Esc to stop)")
         self._rec.setCursor(Qt.PointingHandCursor)
         self._rec.clicked.connect(self.record_requested.emit)
         self._play = QPushButton("▶"); self._play.setObjectName("iconBtn")
@@ -521,7 +521,7 @@ class CompactFace(QWidget):
         ft = QHBoxLayout(); ft.setContentsMargins(0, 0, 0, 0)
         adv = QPushButton("Advanced ›"); adv.setObjectName("footLink")
         adv.setCursor(Qt.PointingHandCursor)
-        adv.setToolTip("The node canvas — build a flow with steps and branches")
+        adv.setToolTip("The node canvas — build a script with steps and branches")
         adv.clicked.connect(self.advanced_requested.emit)
         ft.addStretch(1); ft.addWidget(adv)
         return ft
@@ -737,7 +737,7 @@ class CompactFace(QWidget):
         self._recording = recording
         self._rec.setText("■" if recording else "●")
         self._rec.setToolTip("Stop recording" if recording else
-                             "Record a macro (F8/Esc to stop)")
+                             "Record a script (F8/Esc to stop)")
 
     def set_scripts(self, names, current=""):
         self._scripts.blockSignals(True)

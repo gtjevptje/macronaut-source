@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import time
 import json
+import math
 import os
 import tempfile
 import copy
@@ -194,7 +195,19 @@ def drag_moves(d: dict) -> int:
 
 
 def drag_total_ms(d: dict) -> float:
-    """Everything the node spends: both settles plus the travel."""
+    """The gesture: press to release. The travel plus the two settles inside it.
+
+    ⚠ NOT everything the node spends, which is what this used to claim. The
+    engine is settle-press-settle-travel-settle-release — a *third* settle, on
+    arrival, before the button goes down. That one belongs to getting there
+    rather than to the gesture, and it is budgeted against the step's gap by
+    `flow_exec._travel_budget`.
+
+    Press-to-release is the span that matters here because it is what the
+    recorder reproduces: it subtracts exactly these two settles from a captured
+    swipe so the replayed gesture takes the time the real one did, which is
+    frequently the thing the receiver is measuring.
+    """
     return drag_duration_ms(d) + 2 * DRAG_SETTLE_MS
 
 
@@ -212,6 +225,188 @@ def drag_path(d: dict) -> List[tuple]:
     return [(int(round(x0 + (x1 - x0) * (i / n))),
              int(round(y0 + (y1 - y0) * (i / n))))
             for i in range(1, n + 1)]
+
+
+# ── Pointer travel ─────────────────────────────────────────────────
+# How the pointer GETS to the place a step clicks. Every click, move, scroll-at
+# and detect-then-click used to set the cursor position in one assignment, which
+# is a teleport: the pointer is at A in one sample and B in the next, and it was
+# never anywhere in between.
+#
+# ⚠ This is the same lesson as `drag_path` above, one step earlier in the
+# gesture. A receiver that samples the pointer once a frame learns where it is
+# from where it has *been*, and plenty of them act on the journey rather than
+# the destination: hover states never fire, a menu that opens on mouse-enter is
+# not open by the time the click lands, and anything watching for a cursor that
+# behaves like a hand sees the one motion a hand cannot make.
+#
+# The shape is a straight line walked with an ease-in-out (`smoothstep`), which
+# is what a hand does — accelerate off the mark, coast, decelerate onto the
+# target — with a shallow bow across it and a little tremor along the way.
+#
+# ⚠ There are two amplitudes, not two behaviours. Until 8 September 2026 a
+# glide was either a mathematically exact line or the full human-mode wander,
+# and the exact line is its own tell: a hand does not travel 900 px without
+# deviating from the ruler by so much as a pixel. The *standard* amplitudes
+# below are deliberately tiny — a bow of a percent and a half, capped at six
+# pixels, and under a pixel of tremor — small enough that the path still goes
+# where a straight one would (it must not sweep across a menu it was not aimed
+# at) and large enough that no two glides between the same two points are the
+# same. `human=True` opens both up to the wander that the auto-click node's
+# human mode has always meant.
+#
+# Curvature and tremor still require an `rng`: with `rng=None` the path is the
+# clean eased line, which is what keeps it deterministic and testable.
+TRAVEL_HZ = 120.0          # moves per second; above a frame, cheap, and smooth
+MIN_TRAVEL_MOVES = 2       # a start and an end is the least that is still a path
+MAX_TRAVEL_MOVES = 400     # a bound, not a budget
+DEFAULT_TRAVEL_PPS = 3000.0    # pixels per second: a brisk but visible glide
+MIN_TRAVEL_PPS = 200.0
+MAX_TRAVEL_PPS = 40000.0
+MIN_TRAVEL_MS = 40.0       # a 30 px hop still has to be a movement, not a jump
+MAX_TRAVEL_MS = 1500.0     # crossing a 4K desktop must not become a pause
+# Under this, one move and be done: a two-pixel glide is six identical points,
+# which costs a frame and looks like nothing at all.
+TRAVEL_SNAP_PX = 4.0
+# How far the bow can push the path off the straight line, as a fraction of the
+# distance and in absolute pixels. Small: the click must still land where it
+# was aimed, and a wide arc across a menu opens submenus on the way past.
+# The standard pair is the one every glide gets; the human pair is what the
+# opt-in widens them to.
+TRAVEL_BOW_FRAC = 0.015
+TRAVEL_BOW_MAX_PX = 6.0
+HUMAN_BOW_FRAC = 0.06
+HUMAN_BOW_MAX_PX = 28.0
+# Tremor is applied ACROSS the direction of travel only, never along it. A hand
+# wobbles sideways; what it does along the line is vary its speed, and adding
+# noise there can make a step go backwards — a pointer that moves 2 px towards
+# the target and then 1 px away from it is not more human, it is a cursor
+# stuttering, and it costs the monotonic progress a receiver reads direction
+# from. Sub-pixel by default, so after rounding most points sit exactly where
+# the clean line put them and the rest are a pixel off it.
+TRAVEL_TREMOR_PX = 0.8
+HUMAN_TREMOR_PX = 2.0
+
+
+def travel_pps(pps: Optional[float] = None) -> float:
+    """The travel speed to use, clamped. None/0/nonsense → the default."""
+    try:
+        v = float(DEFAULT_TRAVEL_PPS if pps is None else pps)
+    except (TypeError, ValueError):
+        return float(DEFAULT_TRAVEL_PPS)
+    if v <= 0:
+        return float(DEFAULT_TRAVEL_PPS)
+    return max(MIN_TRAVEL_PPS, min(MAX_TRAVEL_PPS, v))
+
+
+def travel_duration_ms(distance_px: float, pps: Optional[float] = None) -> float:
+    """How long a glide of this length takes, in ms.
+
+    Real time, like a drag's travel and a key's hold: it is a statement about
+    the motion the receiver has to see, so the run's speed multiplier does not
+    stretch or shrink it.
+    """
+    try:
+        dist = abs(float(distance_px))
+    except (TypeError, ValueError):
+        dist = 0.0
+    ms = dist / travel_pps(pps) * 1000.0
+    return max(MIN_TRAVEL_MS, min(MAX_TRAVEL_MS, ms))
+
+
+def travel_within(natural_ms: float, gap_ms: float) -> float:
+    """The glide takes `natural_ms`, but it has `gap_ms` to do it in.
+
+    ⚠ The pointer glides at a fixed `mouse_travel_pps`; a hand does not. When a
+    recorded gap is shorter than the glide the settings would make, the
+    recording is *evidence* the pointer covered that distance in that time —
+    the next click landed. Taking longer is not caution, it is slower than what
+    actually happened, and the error is per-step, so it compounds over exactly
+    the recordings people make. Measured 8 September 2026 on ten clicks 180 ms
+    apart at scattered points: 1623 ms recorded, 2385 ms replayed.
+
+    ⚠ The floor is `MIN_TRAVEL_MS`, and it is not a rounding detail. Squeezing
+    a 900 px jump into the 4 ms between two fast clicks is a teleport with
+    extra steps, which is the exact failure the glide exists to fix.
+
+    A gap of zero is "no gap recorded", not "a gap of no time": a step with no
+    delay has nothing to fit into and keeps its natural speed.
+    """
+    try:
+        natural = float(natural_ms)
+        gap = float(gap_ms)
+    except (TypeError, ValueError):
+        return float(MIN_TRAVEL_MS)
+    if gap <= 0 or gap >= natural:
+        return natural
+    return max(float(MIN_TRAVEL_MS), gap)
+
+
+def travel_moves(distance_px: float, pps: Optional[float] = None) -> int:
+    """How many move events the glide is cut into. Derived, never a field —
+    same reasoning as `drag_moves`: exposing it only lets someone set it to 1
+    and rebuild the teleport this exists to avoid."""
+    n = int(round(travel_duration_ms(distance_px, pps) / 1000.0 * TRAVEL_HZ))
+    return max(MIN_TRAVEL_MOVES, min(MAX_TRAVEL_MOVES, n))
+
+
+def travel_path(start, end, pps: Optional[float] = None, rng=None,
+                human: bool = False) -> List[tuple]:
+    """The (x, y) points the pointer visits on its way, start excluded, end
+    included — same convention as `drag_path`, so both can be walked the same
+    way by the engine.
+
+    `rng` is an optional `random.Random`. Without one the path is a clean eased
+    line and identical every time (which is what the tests read); with one it
+    gets a shallow bow and a little sideways tremor. `human=True` widens both
+    to the deliberate wander that the auto-click node's human mode means — the
+    engine passes an rng on every glide and reserves the flag for that setting,
+    so the difference between the two is amplitude, not presence.
+
+    Neither may move where the last point lands. The end point is always
+    exactly `end`: a click that misses by a pixel because a jitter landed on
+    the final sample is a bug that would show up once in fifty runs.
+    """
+    x0, y0 = float(start[0]), float(start[1])
+    x1, y1 = float(end[0]), float(end[1])
+    dx, dy = x1 - x0, y1 - y0
+    dist = (dx * dx + dy * dy) ** 0.5
+    if dist <= TRAVEL_SNAP_PX:
+        return [(int(round(x1)), int(round(y1)))]
+
+    n = travel_moves(dist, pps)
+    bow = 0.0
+    tremor = 0.0
+    if rng is not None:
+        frac = HUMAN_BOW_FRAC if human else TRAVEL_BOW_FRAC
+        cap = HUMAN_BOW_MAX_PX if human else TRAVEL_BOW_MAX_PX
+        bow = rng.uniform(-1.0, 1.0) * min(dist * frac, cap)
+        tremor = HUMAN_TREMOR_PX if human else TRAVEL_TREMOR_PX
+    # Unit normal to the line — what the bow and the tremor both push along, so
+    # progress towards the target stays monotonic however either lands.
+    nx, ny = (-dy / dist, dx / dist)
+
+    pts = []
+    for i in range(1, n + 1):
+        t = i / n
+        e = t * t * (3.0 - 2.0 * t)          # smoothstep: ease in, ease out
+        px = x0 + dx * e
+        py = y0 + dy * e
+        if i < n:
+            off = 0.0
+            if bow:
+                # sin(pi*t): zero at both ends, widest in the middle, so the
+                # path leaves and arrives on the line it was aimed along.
+                off += bow * math.sin(math.pi * t)
+            if tremor:
+                # Faded out towards the target the same way, so the last few
+                # samples before the click are on the line the click is on.
+                off += rng.uniform(-tremor, tremor) * math.sin(math.pi * t)
+            px += nx * off
+            py += ny * off
+        pts.append((int(round(px)), int(round(py))))
+    pts[-1] = (int(round(x1)), int(round(y1)))
+    return pts
 
 
 # ── How typed text is delivered ──────────────────────────────────────────────
@@ -249,6 +444,63 @@ def send_as(d: dict) -> str:
     """
     v = str((d or {}).get("send_as", "") or "").lower().strip()
     return v if v in SEND_MODES else SEND_AUTO
+
+
+# ── Mouse buttons ────────────────────────────────────────────────────────────
+# ⚠ The two side buttons were recorded as LEFT CLICKS. `_on_click` mapped
+# pynput's Button enum through a three-entry dict with `.get(button, "left")`,
+# so a thumb button — Back and Forward in Windows, Mouse 4 and Mouse 5 to
+# anyone who plays games with them — came out as a left click at the same
+# coordinates and replayed as one. Not a missing feature: a wrong action,
+# silently, in the place a right answer would have gone.
+#
+# Stored as "x1"/"x2" (Windows' XBUTTON1/XBUTTON2) and shown as Back/Forward,
+# which is what the OS calls them and what they do in a browser or a folder.
+BUTTONS = ("left", "right", "middle", "x1", "x2")
+BUTTON_LABELS = {"left": "Left", "right": "Right", "middle": "Middle",
+                 "x1": "Back", "x2": "Forward"}
+
+
+def button_label(name: str) -> str:
+    """What to call a button in a step summary or a control."""
+    return BUTTON_LABELS.get(str(name or "left").lower(), "Left")
+
+
+# ── Modifiers held over a pointer action ─────────────────────────────────────
+# Ctrl-click to add to a selection, Shift-click to extend one, Alt-drag to
+# copy, Shift-scroll to go sideways. All of them are one gesture, and until
+# 8 September 2026 a click step could not express any of them.
+#
+# ⚠ This is the chord lesson from `recorder._flush_chord`, one step over. A
+# recording captured the click and the modifier separately and put the
+# modifier LAST, because a modifier only became a step when it came back up:
+# a ctrl-click multi-select replayed as two plain clicks — the second undoing
+# the first — followed by a stray ctrl held down for a second with nothing
+# under it. The overlap was the entire content of the gesture and the saved
+# JSON has no record that it happened.
+#
+# The absence of the field means no modifiers, which is exactly what every
+# flow saved before this did, so nothing needs migrating.
+MOD_ORDER = ("ctrl", "alt", "shift", "win")
+
+
+def pointer_mods(d: dict) -> List[str]:
+    """The modifiers a click/drag/scroll step is held under, canonically
+    ordered so that two steps meaning the same thing read the same way."""
+    raw = (d or {}).get("mods") or []
+    if isinstance(raw, str):
+        raw = [raw]
+    # ⚠ A number or a bool here is not iterable, and this used to raise
+    # TypeError straight out of the comprehension — out of `do_action`,
+    # past no guard, and into `run()`, which ends the whole run on an
+    # exception from an action. A malformed field has to cost its own
+    # step, never the run. Every accessor beside this one (`key_mode`,
+    # `scroll_notches`, `travel_pps`) was already written that way.
+    try:
+        have = {str(v).lower().strip() for v in raw}
+    except TypeError:
+        return []
+    return [m for m in MOD_ORDER if m in have]
 
 
 def key_mode(d: dict) -> str:
@@ -400,6 +652,36 @@ def expected_ms(node, speed: float = 1.0, measured: Optional[dict] = None) -> in
     return estimate(node, speed, measured).ms
 
 
+def _key_settle_ms() -> float:
+    """How long the engine really holds each key, not what we assume.
+
+    ⚠ `KEY_SETTLE_MS` is 60.0 and `settings.key_hold_ms` defaults to 60, so the
+    two agreed until somebody changed the setting — and then a bar labelled
+    EXACT was wrong by the ratio. Measured on a machine with it set to 5: a tap
+    predicted 60 ms against 5 actual, a three-key combo 180 against 16, a
+    five-times repeat **540 against 49**. A hold is unaffected, because
+    `hold_ms` dominates and is real time either way.
+
+    Same shape as the `text` branch below, which already asks `input_backends`
+    for the real rate instead of trusting its own constant, and for the same
+    reason: `flow` sits under settings and cannot import them at module level,
+    so it asks lazily and falls back to the constant when there is nobody to
+    ask.
+
+    ⚠ Cheap where it matters. `_live_settings()` returns the app's registered
+    in-memory manager (`main.set_active`), so this is a lookup rather than a
+    file read on the path that draws one bar per node.
+    """
+    try:
+        import input_backends
+        v = getattr(input_backends._live_settings(), "key_hold_ms", None)
+        if v is not None:
+            return max(0.0, float(v))
+    except Exception:
+        pass
+    return KEY_SETTLE_MS
+
+
 def _exact_step_ms(node, speed: float) -> Optional[float]:
     """The step's own duration when its settings fully determine it."""
     if node.type != N_ACTION:
@@ -412,6 +694,7 @@ def _exact_step_ms(node, speed: float) -> Optional[float]:
         return float(d.get("ms", 0) or 0)
 
     if kind in ("key", "combo"):
+        settle = _key_settle_ms()
         mode = key_mode(d)
         if mode in (KEY_DOWN, KEY_UP):
             # A state change. The press itself settles, but the node is over
@@ -420,10 +703,10 @@ def _exact_step_ms(node, speed: float) -> Optional[float]:
         n = max(1, len(d.get("keys", [])))
         rep = max(1, int(d.get("repeat", 1) or 1))
         if mode == KEY_HOLD:
-            per = (n - 1) * KEY_SETTLE_MS + float(d.get("hold_ms", 0) or 0)
+            per = (n - 1) * settle + float(d.get("hold_ms", 0) or 0)
         else:
-            per = n * KEY_SETTLE_MS
-        return per * rep + (rep - 1) * KEY_SETTLE_MS
+            per = n * settle
+        return per * rep + (rep - 1) * settle
 
     if kind == "text":
         cps = float(d.get("speed_cps", 0) or 0)
@@ -444,15 +727,33 @@ def _exact_step_ms(node, speed: float) -> Optional[float]:
 
     if kind == "drag":
         # Exact, and worth a bar: a drag is the one mouse step long enough to
-        # watch, and the number is the one the editor asked for plus the two
-        # settles the engine always spends.
-        return drag_total_ms(d)
+        # watch. All THREE settles — the gesture's two, plus the one spent on
+        # arrival before the press. Counting `drag_total_ms` alone left every
+        # drag's bar one settle short of what the node really takes.
+        return drag_total_ms(d) + DRAG_SETTLE_MS
 
     if kind == "scroll":
         # Paced scrolling is exactly as long as it says it is; a burst at full
         # speed is one SendInput per notch and rounds to nothing.
+        #
+        # ⚠ (n-1)/cps, not n/cps — the mirror of the drag's third settle, and
+        # found the same way: by comparing the prediction against what the
+        # engine really spends. `_do_scroll` sends the first notch at once and
+        # waits only *between* the rest, so n notches span n-1 intervals. The
+        # error was one whole period whatever n is, which as a fraction is
+        # 1/n: 9% on a twelve-notch flick and **100% on a two-notch scroll**.
+        #
+        # ⚠ Latent until the recorder started measuring a spin's real rate:
+        # a recorded scroll used to carry `speed_nps: 0`, which takes the
+        # burst branch below and returns 0, so no recorded scroll ever
+        # reached this line.
+        #
+        # The engine is the one that is right. A rate is about the gaps
+        # between notches, and a trailing pause after the last one buys
+        # nothing — unlike a drag's final settle, which is what lets a
+        # receiver see the button come back up.
         n, cps = scroll_notches(d), scroll_cps(d)
-        return (n / cps) * 1000.0 if cps > 0 else 0.0
+        return (max(0, n - 1) / cps) * 1000.0 if cps > 0 else 0.0
 
     if kind == "autoclick":
         lim = int(d.get("click_limit", 0) or 0)
@@ -787,7 +1088,7 @@ class FlowGraph:
                     f"“{name}” is empty. The file is still there, but there is "
                     "nothing in it to open.") from exc
             raise ValueError(
-                f"“{name}” is not readable as a flow — it looks like the file "
+                f"“{name}” is not readable as a script — it looks like the file "
                 f"was cut short while being saved ({exc.msg} at character "
                 f"{exc.pos} of {len(text)}). Nothing has been changed; the "
                 "file is still on disk if you want to look at it."
@@ -804,10 +1105,10 @@ class FlowGraph:
             kind = type(payload).__name__
             raise ValueError(
                 f"“{os.path.basename(path)}” is valid JSON, but the whole file "
-                f"is a {kind} where a flow has to be an object — it should "
+                f"is a {kind} where a script has to be an object — it should "
                 "start with a “{” and have \"nodes\" and \"edges\" inside it. "
                 "If this is a list of steps from somewhere else, it is not a "
-                "flow file. Nothing has been changed.")
+                "script file. Nothing has been changed.")
         try:
             return cls.from_dict(payload)
         except (TypeError, KeyError, ValueError, AttributeError) as exc:
@@ -820,7 +1121,7 @@ class FlowGraph:
             detail = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
             raise ValueError(
                 f"“{os.path.basename(path)}” is valid JSON but is not shaped "
-                f"like a flow ({detail}). If you have edited it by hand, that "
+                f"like a script ({detail}). If you have edited it by hand, that "
                 "is where to look — a node needs an \"id\" and a \"type\", and "
                 "an edge needs \"src\" and \"dst\". Nothing has been changed."
             ) from exc
@@ -970,12 +1271,18 @@ def summarize_node(node: FlowNode) -> str:
     return t
 
 
+def _mod_prefix(d: dict) -> str:
+    """"Ctrl+Shift+" for a pointer step held under modifiers, else ""."""
+    mods = pointer_mods(d)
+    return "".join(m.capitalize() + "+" for m in mods)
+
+
 def _action_summary(step: dict) -> str:
     """Mirror of SeqStep.description() but works on a plain dict."""
     kind = step.get("kind", "?")
     d = step.get("data", {})
     if kind == "autoclick":
-        btn = d.get("button", "left").capitalize()
+        btn = button_label(d.get("button", "left"))
         if d.get("max_speed"):
             spd = "MAX"
         elif d.get("unit", "cps") == "sec":
@@ -986,15 +1293,16 @@ def _action_summary(step: dict) -> str:
         tail = f" · {lim}×" if lim else ""
         return f"Auto-click {btn} · {spd}{tail}"
     if kind == "click":
-        btn = d.get("button", "left").capitalize()
+        btn = button_label(d.get("button", "left"))
         pre = "Double-" if d.get("clicks", 1) == 2 else ""
-        return f"{pre}{btn} click ({d.get('x',0)},{d.get('y',0)})"
+        return (f"{_mod_prefix(d)}{pre}{btn} click "
+                f"({d.get('x',0)},{d.get('y',0)})")
     if kind == "move":
         return f"Move to ({d.get('x',0)},{d.get('y',0)})"
     if kind == "drag":
-        btn = d.get("button", "left").capitalize()
+        btn = button_label(d.get("button", "left"))
         lead = "Drag" if btn == "Left" else f"{btn} drag"
-        return (f"{lead} ({d.get('x',0)},{d.get('y',0)}) → "
+        return (f"{_mod_prefix(d)}{lead} ({d.get('x',0)},{d.get('y',0)}) → "
                 f"({d.get('to_x',0)},{d.get('to_y',0)}) · "
                 f"{drag_duration_ms(d) / 1000:g} s")
     if kind in ("key", "combo"):
@@ -1018,9 +1326,18 @@ def _action_summary(step: dict) -> str:
     if kind == "scroll":
         arrow = {SCROLL_UP: "↑", SCROLL_DOWN: "↓",
                  SCROLL_LEFT: "←", SCROLL_RIGHT: "→"}[scroll_direction(d)]
-        s = f"Scroll {arrow} {scroll_notches(d)}"
+        s = f"{_mod_prefix(d)}Scroll {arrow} {scroll_notches(d)}"
         if not d.get("at_cursor", True):
             s += f" at ({d.get('x', 0)},{d.get('y', 0)})"
+        # The rate is a recorded measurement now, not just a dial: a flick
+        # and a slow drag of the wheel are different gestures and used to
+        # render identically. 0 means "as fast as the backend will take
+        # them", which is the default, so it prints nothing rather than
+        # putting noise on every hand-built scroll.
+        cps = scroll_cps(d)
+        if cps > 0:
+            rate = f"{cps:.1f}".rstrip("0").rstrip(".")
+            s += f" · {rate}/s"
         return s
     if kind == "wait":
         return f"Wait {format_duration(d.get('ms', 0))}"

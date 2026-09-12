@@ -614,5 +614,5 @@ def test_starting_the_app_makes_the_offer_without_being_asked(fresh_window,
     texts = [n.data.get("text") for n in w._sequence_tab._graph.nodes.values()
              if n.type == flow.N_ACTION]
     assert texts == ["offer me unprompted"], (
-        "the app started and never offered the unsaved flow back")
+        "the app started and never offered the unsaved script back")
     assert recovery.read() is None, "the payload was not retired"

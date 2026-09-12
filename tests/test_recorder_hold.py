@@ -22,7 +22,11 @@ def _make_recorder(monkeypatch, clock: dict):
     rec._down = {}
     rec._keys_down = {}
     rec._mods_info = {}
-    monkeypatch.setattr(recorder.time, "monotonic", lambda: clock["t"])
+    # ⚠ perf_counter, not monotonic: the recorder measures on the fine
+    # clock (monotonic is GetTickCount64, 15.625 ms, which quantised
+    # every recorded duration). Patching the old name here would leave
+    # these tests reading the real clock and timing out or drifting.
+    monkeypatch.setattr(recorder.time, "perf_counter", lambda: clock["t"])
     # Fake keys are plain strings; make _key_to_str the identity so tests can
     # feed "w", "shift", "c" etc. directly.
     monkeypatch.setattr(SequenceRecorder, "_key_to_str", staticmethod(lambda key: key))
@@ -312,7 +316,16 @@ def test_a_press_that_moved_is_recorded_as_a_drag(monkeypatch):
     assert (step.data["to_x"], step.data["to_y"]) == (900, 405)
     # Recorded, not defaulted: the speed of a swipe is often the thing the
     # receiver is measuring.
-    assert step.data["duration_ms"] == 500
+    #
+    # ⚠ Asserted as the press-to-release the REPLAY will take, not as the raw
+    # 500 this used to check. `duration_ms` is the time the pointer spends
+    # travelling — flow.drag_duration_ms's meaning, and the editor's "Travel
+    # time" row — and the engine adds a settle either side of it. Storing the
+    # whole 500 there made the replayed swipe 160 ms slower than the one that
+    # was made, which is the number the receiver is measuring.
+    import flow
+    assert abs(flow.drag_total_ms(step.data) - 500) < 1
+    assert step.data["duration_ms"] == 500 - 2 * flow.DRAG_SETTLE_MS
 
 
 def test_a_press_that_did_not_move_stays_a_click(monkeypatch):

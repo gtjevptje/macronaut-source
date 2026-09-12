@@ -2,6 +2,7 @@
 import os
 import sys
 import json
+import random
 from unittest import mock
 
 import pytest
@@ -1617,12 +1618,20 @@ def test_a_scroll_step_says_what_it_does():
 
 def test_a_paced_scroll_is_exactly_as_long_as_it_says():
     """A speed makes the duration knowable, so the timeline can draw it as a
-    measurement rather than a guess."""
+    measurement rather than a guess.
+
+    ⚠ 1800, not 2000. This asserted 2000 until 8 September 2026 — n/cps — and
+    `_do_scroll` sends the first notch at once and waits only *between* the
+    rest, so ten notches at 5/s span nine intervals and cost 1800 ms. The error
+    was one whole period whatever n is, which is 100% on a two-notch scroll.
+    The mirror of the drag's third settle, and the same lesson: a prediction is
+    only EXACT if it was checked against what the engine spends.
+    """
     g = flow.FlowGraph()
     n = g.add_node(flow.N_ACTION, {"step": {"kind": "scroll", "data": {
         "amount": 10, "speed_nps": 5}}})
     est = flow.estimate(n)
-    assert (est.ms, est.source) == (2000, flow.EXACT)
+    assert (est.ms, est.source) == (1800, flow.EXACT)
 
     fast = g.add_node(flow.N_ACTION, {"step": {"kind": "scroll", "data": {
         "amount": 10, "speed_nps": 0}}})
@@ -1668,10 +1677,17 @@ def _scroll_exec(data=None):
 
     class _Host:
         _do_scroll = flow_exec.FlowWorker._do_scroll
+        # The real one: a scroll that names a position travels there like any
+        # other step, and the fake mouse below records every point on the way.
+        _travel_to = flow_exec.FlowWorker._travel_to
 
         def __init__(self):
             self._mouse = _WheelMouse()
             self._running = True
+            self._smooth_mouse = True
+            self._travel_pps = flow.DEFAULT_TRAVEL_PPS
+            self._travel_human = False
+            self._travel_rng = None
 
         def running(self):
             return self._running
@@ -1752,12 +1768,19 @@ def _drag_exec():
     class _Host:
         _do_drag = flow_exec.FlowWorker._do_drag
         _release_mouse = flow_exec.FlowWorker._release_mouse
+        # Getting to the start of the drag is a glide of its own; the travel
+        # between the two points is the drag proper.
+        _travel_to = flow_exec.FlowWorker._travel_to
 
         def __init__(self):
             self._mouse = _DragMouse()
             self._running = True
             self._held = {}
             self._held_btn = None
+            self._smooth_mouse = True
+            self._travel_pps = flow.DEFAULT_TRAVEL_PPS
+            self._travel_human = False
+            self._travel_rng = None
 
         def running(self):
             return self._running
@@ -1776,12 +1799,16 @@ def test_a_drag_presses_moves_and_releases_in_that_order():
     ex, mouse = _drag_exec()
     assert ex._do_drag(dict(_DRAG)) is True
     kinds = [e[0] for e in mouse.events]
-    assert kinds[0] == "move", "the pointer is placed before the button goes down"
-    assert kinds[1] == "press"
-    assert kinds[-1] == "release"
     assert kinds.count("press") == 1 and kinds.count("release") == 1
-    # Every move between them is the gesture itself.
-    assert set(kinds[2:-1]) == {"move"}
+    pressed = kinds.index("press")
+    # Everything before the press is the pointer travelling to the start —
+    # itself a glide rather than a jump, since the control being swiped at may
+    # well be watching for a cursor arriving.
+    assert pressed >= 1, "the pointer is placed before the button goes down"
+    assert set(kinds[:pressed]) == {"move"}
+    assert kinds[-1] == "release"
+    # Every move between the press and the release is the gesture itself.
+    assert set(kinds[pressed + 1:-1]) == {"move"}
 
 
 def test_a_drag_sends_a_path_and_not_a_jump():
@@ -1824,7 +1851,11 @@ def test_stop_mid_drag_still_releases_the_button():
 
     def stop_after_five(self, xy):
         real(self, xy)
-        if len([e for e in self.events if e[0] == "move"]) >= 5:
+        # Counted from the press, not from the first event: the moves before it
+        # are the approach to the start point, and stopping there would test
+        # the travel rather than the held gesture this is about.
+        kinds = [e[0] for e in self.events]
+        if "press" in kinds and kinds[kinds.index("press"):].count("move") >= 5:
             ex._running = False
     with mock.patch.object(_DragMouse, "position",
                            property(_DragMouse.position.fget, stop_after_five)):
@@ -1837,7 +1868,8 @@ def test_a_backend_that_raises_mid_drag_still_releases_the_button():
     ex, mouse = _drag_exec()
 
     def boom(self, xy):
-        if len([e for e in self.events if e[0] == "move"]) >= 3:
+        kinds = [e[0] for e in self.events]
+        if "press" in kinds and kinds[kinds.index("press"):].count("move") >= 3:
             raise OSError("backend went away")
         self._pos = tuple(xy)
         self.events.append(("move", tuple(xy)))
@@ -1894,10 +1926,17 @@ def test_a_drag_step_says_what_it_does_and_how_long_it_takes():
         .startswith("Right drag")
     # Exact, not a guess: the settings decide it, so a timeline can draw a real
     # bar rather than a question mark.
+    #
+    # ⚠ All THREE settles. `_do_drag` is settle-press-settle-travel-settle-
+    # release, and `drag_total_ms` is the *gesture* — press to release — which
+    # holds only two of them. This assertion read `drag_total_ms` alone until
+    # 8 September 2026 and so pinned a bar one settle short of what the node
+    # really takes. The third is spent on arrival, before the press.
     n = flow.FlowNode("d", flow.N_ACTION, {"step": {"kind": "drag", "data": d}})
     est = flow.estimate(n)
     assert est.source == flow.EXACT
-    assert est.ms == pytest.approx(flow.drag_total_ms(d), abs=1)
+    assert est.ms == pytest.approx(
+        flow.drag_total_ms(d) + flow.DRAG_SETTLE_MS, abs=1)
 
 
 def test_a_drag_carries_its_delay_on_the_node():
@@ -2284,3 +2323,449 @@ def test_both_image_paths_warn_about_a_missing_template():
         assert wanted in callers, (
             f"{wanted} no longer reports a missing template; callers: "
             f"{sorted(callers)}")
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  Pointer travel — the cursor goes to a target, it does not appear on it
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# The teleport these pin against was in every click the app made: `click`,
+# `move`, the approach to a drag, a positioned scroll, and — the one that reads
+# worst — "click the text or image you just found". See flow.travel_path for
+# the shape and the reasoning.
+import ctypes as _ct
+
+
+class _TravelMouse:
+    """Records every position it is moved to, plus presses and clicks."""
+    def __init__(self, at=(0, 0)):
+        self._pos = tuple(at)
+        self.events = []
+
+    @property
+    def position(self):
+        return self._pos
+
+    @position.setter
+    def position(self, xy):
+        self._pos = tuple(xy)
+        self.events.append(("move", self._pos))
+
+    def press(self, b):
+        self.events.append(("press", b))
+
+    def release(self, b):
+        self.events.append(("release", b))
+
+    def click(self, b, n=1):
+        self.events.append(("click", b, n))
+
+    def scroll(self, dx, dy):
+        self.events.append(("scroll", dx, dy))
+
+    def moves(self):
+        return [e[1] for e in self.events if e[0] == "move"]
+
+
+def _travelling_worker(at=(0, 0), smooth=True):
+    fw = _make_worker()
+    fw._mouse = _TravelMouse(at)
+    fw._running = True
+    fw.sleep = lambda secs: None
+    fw._smooth_mouse = smooth
+    fw._travel_pps = flow.DEFAULT_TRAVEL_PPS
+    fw._travel_human = False
+    fw._travel_rng = None
+    return fw, fw._mouse
+
+
+def test_the_travel_path_arrives_exactly_and_never_doubles_back():
+    path = flow.travel_path((0, 0), (900, 400))
+    assert len(path) >= 10, "a 985 px journey is a path, not a jump"
+    assert path[-1] == (900, 400), "a click has to land on the pixel it aimed at"
+    xs = [p[0] for p in path]
+    ys = [p[1] for p in path]
+    assert xs == sorted(xs) and ys == sorted(ys)
+    assert all(0 < x <= 900 for x in xs)
+
+
+def test_the_travel_path_eases_in_and_out_like_a_hand():
+    """Accelerate off the mark, coast, decelerate onto the target. A constant
+    rate is the other motion no hand ever makes."""
+    path = flow.travel_path((0, 0), (1000, 0))
+    steps = [b[0] - a[0] for a, b in zip([(0, 0)] + path, path)]
+    mid = steps[len(steps) // 2]
+    assert steps[0] < mid and steps[-1] < mid
+
+
+def test_a_hop_of_a_few_pixels_is_not_dressed_up_as_a_journey():
+    """Below TRAVEL_SNAP_PX a glide is half a dozen identical points and a frame
+    of delay — and the auto-click node re-aims by that much on every single
+    iteration, so pacing them would cap a max-speed clicker."""
+    assert flow.travel_path((100, 100), (102, 101)) == [(102, 101)]
+
+
+def test_travel_time_is_bounded_at_both_ends():
+    assert flow.travel_duration_ms(1) == flow.MIN_TRAVEL_MS
+    assert flow.travel_duration_ms(10 ** 6) == flow.MAX_TRAVEL_MS
+    # A nonsense speed falls back rather than dividing by zero.
+    assert flow.travel_pps(0) == flow.DEFAULT_TRAVEL_PPS
+    assert flow.travel_pps("fast") == flow.DEFAULT_TRAVEL_PPS
+
+
+# ── the wobble every glide gets ──────────────────────────────────────────────
+# An exactly straight, exactly eased line is the second signature, after the
+# teleport: no hand crosses 900 px without leaving the ruler by a pixel. The
+# standard amplitudes are tiny on purpose — see the note above TRAVEL_HZ.
+
+def _sideways(start, end, path):
+    """Each point's distance from the straight line start→end, signed."""
+    x0, y0 = start
+    dx, dy = end[0] - x0, end[1] - y0
+    L = (dx * dx + dy * dy) ** 0.5
+    return [((p[0] - x0) * -dy + (p[1] - y0) * dx) / L for p in path]
+
+
+def test_every_glide_wobbles_a_little_even_when_human_mode_is_off():
+    """The bug this fixes is not a crash: it is that two glides between the
+    same two pixels used to be byte-identical, forever."""
+    a = flow.travel_path((0, 0), (900, 400), rng=random.Random(1))
+    b = flow.travel_path((0, 0), (900, 400), rng=random.Random(2))
+    clean = flow.travel_path((0, 0), (900, 400))
+    assert a != b, "two glides between the same points are not the same glide"
+    assert a != clean, "the standard path is no longer the exact line"
+
+
+def test_the_standard_wobble_is_small_enough_to_be_invisible():
+    """It must not sweep the pointer across something it was not aimed at: a
+    bow wide enough to see is a bow wide enough to open a neighbouring menu.
+
+    The bound is written out rather than computed from the constants — a test
+    that derives its own limit from the number it is checking passes whatever
+    that number is changed to, which is how a 60 px bow got through once."""
+    for seed in range(40):
+        path = flow.travel_path((0, 0), (1600, 900), rng=random.Random(seed))
+        assert max(abs(v) for v in _sideways((0, 0), (1600, 900), path)) <= 8.0
+        assert path[-1] == (1600, 900), "the click still lands on its pixel"
+
+
+def test_the_path_bows_and_does_not_merely_shake():
+    """Two different things are going on and only one of them is noise. The
+    tremor is sub-pixel and independent per sample; the bow is a single curve
+    across the whole journey, and it is the half that makes the path a route
+    rather than a line someone jiggled. Zeroing the bow leaves every other
+    assertion here green, so this one measures its width directly: at the
+    midpoint the tremor alone cannot reach 3 px."""
+    worst = 0.0
+    for seed in range(40):
+        path = flow.travel_path((0, 0), (1600, 900), rng=random.Random(seed))
+        off = _sideways((0, 0), (1600, 900), path)
+        worst = max(worst, abs(off[len(off) // 2]))
+        # ⚠ And it is widest in the MIDDLE, not a constant sideways offset.
+        # The bow is faded by sin(pi*t) so the path leaves along the line it
+        # was aimed down and arrives on it: a glide that approaches its target
+        # from 6 px off to one side and snaps across at the last sample is the
+        # teleport again, in miniature, at the only moment it matters.
+        assert abs(off[0]) <= 1.5 and abs(off[-2]) <= 1.5
+    assert worst > 3.0
+
+
+def test_the_wobble_goes_across_the_line_and_never_along_it():
+    """Tremor is perpendicular by construction. Noise along the line makes a
+    cursor stutter — 2 px on, 1 px back — which is not more human and costs
+    the monotonic progress a receiver reads direction from.
+
+    Travelling due east, every x is therefore the x of the clean path and the
+    whole wobble is in y. Asserting only that x never decreases does not pin
+    this: at these amplitudes an along-the-line tremor is smaller than the
+    smallest eased step, so it wobbles the speed without ever reversing it."""
+    clean = flow.travel_path((0, 0), (1000, 0))
+    for seed in range(40):
+        path = flow.travel_path((0, 0), (1000, 0), rng=random.Random(seed))
+        assert [p[0] for p in path] == [p[0] for p in clean]
+        assert [p[1] for p in path] != [p[1] for p in clean]
+
+
+def test_human_mode_widens_the_same_wander_rather_than_switching_it_on():
+    def spread(human):
+        worst = 0.0
+        for seed in range(40):
+            p = flow.travel_path((0, 0), (1600, 900), rng=random.Random(seed),
+                                 human=human)
+            worst = max(worst, max(abs(v) for v in _sideways((0, 0), (1600, 900), p)))
+        return worst
+    assert spread(True) > spread(False) * 2
+
+
+class _BowlessRng:
+    """An rng whose bow draw is zero and whose every tremor draw is maximal.
+
+    `travel_path` asks for the bow once and then for one tremor sample per
+    point, so this isolates the tremor from the curve it rides on — which is
+    the only way to see the tremor's own fade, the bow's being far larger."""
+    def __init__(self):
+        self.draws = 0
+
+    def uniform(self, lo, hi):
+        self.draws += 1
+        return 0.0 if self.draws == 1 else hi
+
+
+def test_the_tremor_fades_out_onto_the_target():
+    """Held at full deflection the whole way, the tremor still has to arrive
+    on the line: it is scaled by the same sin(pi*t) as the bow. Human mode is
+    the amplitude at which that stops being a sub-pixel nicety and becomes the
+    difference between arriving on the target and beside it."""
+    path = flow.travel_path((0, 0), (1600, 900), rng=_BowlessRng(), human=True)
+    off = _sideways((0, 0), (1600, 900), path)
+    assert abs(off[len(off) // 2]) > 1.5, "the tremor is there in the middle"
+    assert abs(off[-2]) < 1.0, "and gone by the time the click is next"
+
+
+def test_a_glide_with_no_rng_is_still_the_exact_line():
+    """Determinism is what the rest of this section reads, and what a caller
+    that wants the same path twice (a test, a replay) depends on."""
+    p1 = flow.travel_path((10, 10), (700, 500))
+    p2 = flow.travel_path((10, 10), (700, 500))
+    assert p1 == p2
+    assert all(v == 0.0 or abs(v) < 1.0
+               for v in _sideways((10, 10), (700, 500), p1))
+
+
+def test_the_live_engine_wobbles_without_being_asked_to():
+    """The engine passes its rng on every glide; `human` only picks the
+    amplitude. A worker left on defaults must not travel in a straight line."""
+    fw, mouse = _travelling_worker(at=(0, 0))
+    fw._travel_rng = random.Random(7)
+    assert fw._travel_human is False
+    fw._travel_to(900, 400)
+    off = _sideways((0, 0), (900, 400), mouse.moves())
+    assert any(abs(v) >= 1.0 for v in off), "a default glide is still a ruler"
+    assert mouse.moves()[-1] == (900, 400)
+
+
+def test_a_click_travels_to_its_target_instead_of_appearing_on_it():
+    """The complaint this whole section answers. A receiver samples the pointer
+    once a frame and decides what happened from where it has *been* — a cursor
+    that appears on a button having never approached it leaves hover states
+    unfired and menus unopened, and the click then does nothing."""
+    fw, mouse = _travelling_worker(at=(0, 0))
+    assert fw.do_action({"kind": "click", "data": {"x": 800, "y": 600}}, {}) is True
+    moves = mouse.moves()
+    assert len(moves) >= 10, f"a 1000 px click is a journey, got {len(moves)} moves"
+    assert moves[-1] == (800, 600), "it still has to land on the target"
+    assert moves[0] != (800, 600), "and it must not start there"
+    kinds = [e[0] for e in mouse.events]
+    assert kinds[-1] == "click", "the click comes after the arrival"
+    assert kinds.count("click") == 1
+
+
+def test_a_move_step_travels_too():
+    fw, mouse = _travelling_worker(at=(0, 0))
+    assert fw.do_action({"kind": "move", "data": {"x": 500, "y": 500}}, {}) is True
+    assert len(mouse.moves()) >= 10
+    assert mouse.moves()[-1] == (500, 500)
+
+
+def test_turning_smooth_movement_off_restores_the_single_jump():
+    """The setting is the escape hatch for somebody clicking as fast as the
+    machine allows at a target that does not care where the cursor came from."""
+    fw, mouse = _travelling_worker(at=(0, 0), smooth=False)
+    assert fw.do_action({"kind": "click", "data": {"x": 800, "y": 600}}, {}) is True
+    assert mouse.moves() == [(800, 600)]
+
+
+def test_stop_lands_mid_glide_and_nothing_is_clicked_at_the_far_end():
+    """Half a journey leaves the cursor somewhere harmless. A click at the end
+    of a journey the user cancelled is the action they stopped to avoid."""
+    fw, mouse = _travelling_worker(at=(0, 0))
+    real = _TravelMouse.position.fset
+
+    def stop_after_three(self, xy):
+        real(self, xy)
+        if len(self.moves()) >= 3:
+            fw._running = False
+    with mock.patch.object(_TravelMouse, "position",
+                           property(_TravelMouse.position.fget, stop_after_three)):
+        fw.do_action({"kind": "click", "data": {"x": 900, "y": 900}}, {})
+    assert "click" not in [e[0] for e in mouse.events]
+    assert mouse.moves()[-1] != (900, 900)
+
+
+def test_the_auto_click_node_does_not_pay_for_a_glide_on_every_jitter_hop():
+    """Human mode re-aims by a few pixels per iteration. Gliding those would put
+    MIN_TRAVEL_MS between clicks and cap "max speed" at ~25 CPS — the one number
+    the Basic face exists to deliver."""
+    fw, mouse = _travelling_worker(at=(500, 500))
+    fw.do_action({"kind": "autoclick",
+                  "data": {"use_fixed": True, "fixed_x": 500, "fixed_y": 500,
+                           "human_mode": True, "jitter_px": 5,
+                           "max_speed": True, "click_limit": 12}}, {})
+    clicks = len([e for e in mouse.events if e[0] == "click"])
+    assert clicks == 12
+    # One move per click at most: the pointer is already there, so each hop
+    # snaps instead of being paced.
+    assert len(mouse.moves()) <= clicks + 1
+
+
+def _fake_user32(cursor=(0, 0)):
+    """A stand-in for the raw SendInput path `_click_physical` uses, recording
+    (dx, dy, flags) for every event it is handed."""
+    sent = []
+    metrics = {76: 0, 77: 0, 78: 1920, 79: 1080}
+
+    class _U32:
+        def GetSystemMetrics(self, i):
+            return metrics[i]
+
+        def GetCursorPos(self, ref):
+            arr = _ct.cast(ref, _ct.POINTER(_ct.c_long))
+            arr[0], arr[1] = cursor
+            return 1
+
+        def SendInput(self, n, ref, size):
+            arr = _ct.cast(ref, _ct.POINTER(_ct.c_long))
+            # INPUT is {type, pad, MOUSEINPUT{dx, dy, mouseData, dwFlags, …}}
+            sent.append((arr[2], arr[3], arr[5] & 0xFFFFFFFF))
+            return 1
+
+    class _Windll:
+        user32 = _U32()
+
+    return _Windll(), sent
+
+
+def test_clicking_what_was_detected_travels_there_as_well():
+    """The path named in the original report. It goes straight to SendInput
+    rather than through the mouse controller — the absolute-normalised form is
+    the only one that is right across monitors of different DPI — so it needs
+    its own travel, and a detected button is exactly the kind of target that is
+    watching for a cursor arriving."""
+    import flow_exec
+    from PIL import Image
+    fw, _mouse = _travelling_worker()
+    windll, sent = _fake_user32(cursor=(0, 0))
+    shot = Image.new("RGB", (1920, 1080))
+    with mock.patch.object(flow_exec.ctypes, "windll", windll), \
+         mock.patch.object(flow_exec.time, "sleep", lambda s: None):
+        fw._click_physical(1600, 900, shot)
+    MOVE, DOWN = 0x0001, 0x0002
+    moves = [e for e in sent if e[2] & MOVE]
+    downs = [e for e in sent if e[2] & DOWN]
+    assert len(moves) >= 10, f"a detected target is approached, got {len(moves)}"
+    assert len(downs) == 1
+    assert sent.index(downs[0]) == len(sent) - 2, "press, then release, last"
+    # Normalised absolute coordinates, so the last move is the target itself.
+    assert moves[-1][:2] == downs[0][:2]
+    assert moves[0][:2] != moves[-1][:2]
+
+
+def test_a_detected_click_still_lands_when_smooth_movement_is_off():
+    import flow_exec
+    from PIL import Image
+    fw, _mouse = _travelling_worker(smooth=False)
+    windll, sent = _fake_user32(cursor=(0, 0))
+    with mock.patch.object(flow_exec.ctypes, "windll", windll), \
+         mock.patch.object(flow_exec.time, "sleep", lambda s: None):
+        fw._click_physical(1600, 900, Image.new("RGB", (1920, 1080)))
+    assert len([e for e in sent if e[2] & 0x0001]) == 1
+    assert len([e for e in sent if e[2] & 0x0002]) == 1
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  The glide is spent inside the recorded gap, not added on top of it
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# A recorded delay is the gap between one action and the next, and the hand
+# spent that gap moving. Sleeping all of it and then gliding adds a journey the
+# recording never contained — and the error is per-step, so it compounds over
+# exactly the flows people record: a lot of clicks, some distance apart.
+
+def _spy_worker(at=(0, 0), smooth=True):
+    fw, mouse = _travelling_worker(at=at, smooth=smooth)
+    sleeps = []
+    fw.sleep = lambda s: sleeps.append(s)
+    return fw, mouse, sleeps
+
+
+def test_the_travel_budget_is_what_the_glide_actually_costs():
+    """Not an estimate: `_travel_to` paces itself by the same function."""
+    fw, _m, _s = _spy_worker(at=(0, 0))
+    budget = fw._travel_budget("click", {"x": 300, "y": 400})   # 3-4-5
+    assert budget == flow.travel_duration_ms(500.0, flow.DEFAULT_TRAVEL_PPS)
+
+
+def test_a_replay_spends_the_recorded_gap_travelling():
+    fw, _m, sleeps = _spy_worker(at=(0, 0))
+    fw.do_action({"kind": "click", "data": {"x": 300, "y": 400},
+                  "delay_ms": 500}, {})
+    travel_s = flow.travel_duration_ms(500.0, flow.DEFAULT_TRAVEL_PPS) / 1000.0
+    assert abs(sleeps[0] - (0.5 - travel_s)) < 1e-9
+
+
+def test_a_glide_longer_than_the_gap_does_not_go_back_in_time():
+    """Nothing can give the time back; the step runs when the pointer gets
+    there. What must not happen is a negative sleep, or the full gap being
+    paid on top of a journey that already overran it."""
+    fw, _m, sleeps = _spy_worker(at=(0, 0))
+    fw.do_action({"kind": "click", "data": {"x": 1500, "y": 0},
+                  "delay_ms": 20}, {})
+    assert all(s >= 0 for s in sleeps)
+    # The rest of these are the glide pacing itself. The pre-step sleep would
+    # be the recorded gap exactly, and there is no such call.
+    assert 0.02 not in sleeps, "the 20 ms gap was paid on top of the journey"
+
+
+def test_only_the_steps_that_move_the_pointer_pay_a_budget():
+    fw, _m, _s = _spy_worker(at=(0, 0))
+    assert fw._travel_budget("key", {"keys": ["a"]}) == 0.0
+    assert fw._travel_budget("text", {"text": "hello"}) == 0.0
+    assert fw._travel_budget("wait", {"ms": 500}) == 0.0
+    # A detect-then-click has not searched yet, so it cannot know where it is
+    # going; an auto-click node re-aims inside the snap distance and pays
+    # nothing to begin with. Both are absent from the table on purpose.
+    assert fw._travel_budget("detect", {}) == 0.0
+    assert fw._travel_budget("autoclick", {"x": 900, "y": 900}) == 0.0
+    assert fw._travel_budget("drag", {"x": 300, "y": 400}) > 0.0
+
+
+def test_a_scroll_only_pays_when_it_names_a_place_to_scroll():
+    """`at_cursor` is the default and means "whatever is under the pointer",
+    which is where the pointer already is."""
+    fw, _m, _s = _spy_worker(at=(0, 0))
+    assert fw._travel_budget("scroll", {"direction": "down", "amount": 3}) == 0.0
+    assert fw._travel_budget("scroll", {"direction": "down", "amount": 3,
+                                        "at_cursor": True, "x": 900, "y": 900}) == 0.0
+    assert fw._travel_budget("scroll", {"direction": "down", "amount": 3,
+                                        "at_cursor": False, "x": 900, "y": 900}) > 0.0
+
+
+def test_a_hop_inside_the_snap_distance_costs_nothing():
+    """It is a teleport by design — see `_travel_to` — so budgeting for it
+    would shorten the gap in payment for a journey that never happens."""
+    fw, _m, _s = _spy_worker(at=(100, 100))
+    assert fw._travel_budget("click", {"x": 102, "y": 101}) == 0.0
+
+
+def test_with_smooth_movement_off_the_recorded_gap_is_the_whole_gap():
+    fw, _m, sleeps = _spy_worker(at=(0, 0), smooth=False)
+    assert fw._travel_budget("click", {"x": 300, "y": 400}) == 0.0
+    fw.do_action({"kind": "click", "data": {"x": 300, "y": 400},
+                  "delay_ms": 500}, {})
+    assert sleeps[0] == 0.5
+
+
+def test_the_budget_survives_a_backend_that_cannot_say_where_the_pointer_is():
+    """Same fallback as `_travel_to`: land on the target rather than refuse."""
+    class _Blind:
+        @property
+        def position(self):
+            raise OSError("no cursor here")
+
+        @position.setter
+        def position(self, xy):
+            pass
+
+    fw, _m, _s = _spy_worker(at=(0, 0))
+    fw._mouse = _Blind()
+    assert fw._travel_budget("click", {"x": 300, "y": 400}) == 0.0

@@ -201,6 +201,51 @@ class IOcrEngine(abc.ABC):
         """Optionally build heavy resources ahead of time. Default: no-op."""
         return
 
+    # ── The size the engine will accept ───────────────────────────────
+    #
+    # ⚠ Windows.Media.Ocr refuses any bitmap whose longest side is over
+    # OcrEngine.MaxImageDimension — 10000 px — and "refuses" means it hands
+    # back an EMPTY result. No exception, no partial read. Measured
+    # 8 September 2026 on a 400px strip with one phrase on it:
+    #
+    #     width  9990   2 words   find_text FOUND
+    #     width 10001   0 words   find_text none
+    #
+    # Silence is the worst possible failure here, because it is exactly what
+    # "the text is not on screen" looks like: Detect-text waits out its whole
+    # timeout and If/Else takes the false branch, on a desktop where the user
+    # can read the words themselves. Two ways in — a native grab of a wide
+    # desktop (three 3440px ultrawides is 10320), and the zoom rescue below,
+    # which doubles the grab and so puts every desktop wider than 5000px over
+    # the line, two 2560x1440 monitors included.
+    #
+    # So an oversized image is scaled to fit and the boxes are scaled back,
+    # rather than passed on to be swallowed. A shrunk read is a worse read;
+    # it is not remotely as bad as no read.
+    max_dimension = 0                   # 0 = this engine has no limit
+
+    def _fit(self, img):
+        """Return (an image the engine will accept, the scale applied to it).
+
+        Free — and returns the very same object — when nothing needs doing,
+        which is every ordinary screen and every poll of every flow.
+        """
+        lim = self.max_dimension
+        if not lim:
+            return img, 1.0
+        longest = max(img.width, img.height)
+        if longest <= lim:
+            return img, 1.0
+        scale = lim / float(longest)
+        try:
+            from PIL import Image as _PILImage
+            small = img.resize((max(1, int(img.width * scale)),
+                                max(1, int(img.height * scale))),
+                               _PILImage.LANCZOS)
+        except Exception:
+            return img, 1.0
+        return small, scale
+
     # ── Contract (standardised; shared by every engine) ───────────────
     def read_regions(self, screenshot, region=None) -> List[TextMatch]:
         """Recognise text; return TextMatch fragments in screenshot pixel space.
@@ -208,6 +253,7 @@ class IOcrEngine(abc.ABC):
         if not self._available or screenshot is None:
             return []
         img, ox, oy = _crop_rgb(screenshot, region)
+        img, sc = self._fit(img)
         try:
             raw = self._recognize(img)
         except Exception:
@@ -216,8 +262,9 @@ class IOcrEngine(abc.ABC):
         for item in raw:
             try:
                 l, t, w, h, text, score = item
-                out.append(TextMatch(int(l) + ox, int(t) + oy,
-                                     int(w), int(h), str(text), float(score)))
+                out.append(TextMatch(int(l / sc) + ox, int(t / sc) + oy,
+                                     max(1, int(w / sc)), max(1, int(h / sc)),
+                                     str(text), float(score)))
             except Exception:
                 continue
         return out
@@ -253,6 +300,7 @@ class IOcrEngine(abc.ABC):
         if not self._available or screenshot is None:
             return []
         img, ox, oy = _crop_rgb(screenshot, region)
+        img, sc = self._fit(img)
         try:
             raw = self._recognize_words(img)
         except Exception:
@@ -263,15 +311,127 @@ class IOcrEngine(abc.ABC):
                 l, t, w, h, text, score = item
                 if not str(text).strip():
                     continue
-                out.append(TextMatch(int(l) + ox, int(t) + oy,
-                                     int(w), int(h), str(text), float(score)))
+                out.append(TextMatch(int(l / sc) + ox, int(t / sc) + oy,
+                                     max(1, int(w / sc)), max(1, int(h / sc)),
+                                     str(text), float(score)))
             except Exception:
                 continue
         out.sort(key=lambda m: (m.top, m.left))     # reading order
         return out
 
     def match_phrase(self, target, screenshot, region=None, case_sensitive=False,
-                     word_thresh: float = 0.8, med_thresh: float = 0.6) -> PhraseResult:
+                     word_thresh: float = 0.8, med_thresh: float = 0.6,
+                     _zoom: bool = True) -> PhraseResult:
+        """Read the screen for `target`, and if that finds nothing, read it
+        again bigger. See `_zoom_rescue` for why and for what it costs."""
+        pr = self._match_phrase_once(target, screenshot, region, case_sensitive,
+                                     word_thresh, med_thresh)
+        if pr.matched or not _zoom:
+            return pr
+        return self._zoom_rescue(target, screenshot, region, case_sensitive,
+                                 word_thresh, med_thresh) or pr
+
+    # ⚠ The screenshot went to the OCR engine at native size, and screen UI
+    # text is small — these engines are trained on document scans, where a
+    # capital letter is forty pixels tall rather than eleven.
+    #
+    # Measured 8 September 2026 against Windows OCR: eight UI phrases rendered
+    # at 9-13 px in Segoe UI, Tahoma and Consolas, 120 readings in all.
+    # Read at native size, 58 of 120 came back. Read at twice the size, 98.
+    # It is not a marginal gain and it is not evenly spread: at 12 px and up
+    # the plain read is already near-perfect and the enlargement changes
+    # nothing, while at 9-10 px the plain read gets almost none of them.
+    #
+    # So this is a rescue, not a policy: the plain read runs first and pays
+    # nothing, and the second only happens when the answer would otherwise be
+    # "not found" — which is exactly when somebody is staring at a step that
+    # cannot see text they can read perfectly well themselves. It costs about
+    # 0.4 ms when the first read succeeds and about 190 ms when it does not.
+    #
+    # ⚠ LANCZOS, and that was measured too, not assumed. An integer upscale
+    # with NEAREST replicates pixels exactly and looked equal on the first
+    # sample — 4 phrases out of 4 — which is how it nearly got chosen. Over
+    # the full 120 it scores 88 against LANCZOS's 98, and on 9 px Consolas it
+    # gets none at all where LANCZOS gets five. Sharper is not better here;
+    # the engine wants the smooth edges it was trained on.
+    # ⚠ It also catches something the paragraph above does not describe, and
+    # which is worth knowing before anyone decides the rescue is only for tiny
+    # text. Windows OCR sometimes returns **nothing at all** for perfectly
+    # legible text, and the trigger does not follow a rule. Measured
+    # 8 September 2026 — 22 px Segoe UI, one phrase, canvas 1080 tall, plain
+    # read with the rescue switched off:
+    #
+    #        y      1920   2560   3840   5760
+    #     1000        ok     ok     ok     ok
+    #     1020        ok     ok   MISS   MISS
+    #     1040        ok     ok     ok     ok
+    #
+    # Twenty pixels either side of that row is fine, and the row *closer* to
+    # the edge is fine, so it is not a margin, not a canvas size and not text
+    # size — it is the engine, and it reproduced 3 times out of 3. The rescue
+    # reads those cases correctly.
+    #
+    # ⚠ Do not try to predict it. Anything that looked like a rule here would
+    # be fitted to one machine's build of one engine; the rescue already covers
+    # it by re-reading, which is the only thing that generalises.
+    ZOOM = 2
+    # Upscaling a whole 4K grab is 33 megapixels of work on every poll of a
+    # wait-for-text that has not appeared yet. Bounded, and skipped entirely
+    # when the bound would make the enlargement too small to be worth it —
+    # a search area crops first and brings a big screen back under it.
+    ZOOM_MAX_PX = 12_000_000
+    # ⚠ 1.5 here was a guess, and it switched the rescue off for every 4K and
+    # larger desktop — the budget allows a 4K grab exactly x1.203, which fell
+    # under the floor. Measured 8 September 2026 on a 3840x2160 canvas, the
+    # eight phrases at 9-13 px in three fonts: native 61/120, x1.203 **90/120**.
+    # Half the misses, for 187 ms, on a path that only runs when the answer
+    # would otherwise be "not found".
+    #
+    # There is no cliff to sit above: on a smaller canvas x1.05 already
+    # recovers 5 misses of 53, x1.10 eleven, x1.15 fifteen, x1.30 thirty. So
+    # this is a cost/benefit cut and nothing more principled — below it the
+    # second read costs its full time to recover almost nothing.
+    ZOOM_MIN_FACTOR = 1.15
+
+    def _zoom_factor(self, w: int, h: int) -> float:
+        px = max(1, w * h)
+        factor = min(float(self.ZOOM), (self.ZOOM_MAX_PX / px) ** 0.5)
+        # Never enlarge past what the engine will look at: over its limit the
+        # read comes back empty, so the rescue would cost ~700 ms a poll to
+        # learn nothing. See `max_dimension`.
+        if self.max_dimension:
+            factor = min(factor, self.max_dimension / float(max(1, w, h)))
+        return factor if factor >= self.ZOOM_MIN_FACTOR else 0.0
+
+    def _zoom_rescue(self, target, screenshot, region, case_sensitive,
+                     word_thresh, med_thresh):
+        """Re-read an enlarged copy. None if it could not or did not help."""
+        try:
+            from PIL import Image as _PILImage
+            img, ox, oy = _crop_rgb(screenshot, region)
+            factor = self._zoom_factor(img.width, img.height)
+            if not factor:
+                return None
+            big = img.resize((int(img.width * factor), int(img.height * factor)),
+                             _PILImage.LANCZOS)
+            pr = self._match_phrase_once(target, big, None, case_sensitive,
+                                         word_thresh, med_thresh)
+        except Exception:
+            return None
+        if not pr.matched or pr.box is None:
+            # The honest first answer is kept. A near-miss reported from an
+            # enlarged image would describe a picture the user is not looking
+            # at, and the summary is shown to them verbatim.
+            return None
+        b = pr.box
+        return pr._replace(box=TextMatch(
+            int(round(b.left / factor)) + ox, int(round(b.top / factor)) + oy,
+            max(1, int(round(b.width / factor))),
+            max(1, int(round(b.height / factor))), b.text, b.score))
+
+    def _match_phrase_once(self, target, screenshot, region=None,
+                           case_sensitive=False, word_thresh: float = 0.8,
+                           med_thresh: float = 0.6) -> PhraseResult:
         """
         Sequential, coordinate-aware phrase matcher.
 
@@ -388,6 +548,22 @@ class IOcrEngine(abc.ABC):
         OCR error on long sentences no longer breaks the match. Single words use
         precise word matching, then fall back to line-level substring/fuzzy.
         Returns None if nothing qualifies.
+
+        ⚠ `min_score` means two different things on the two paths, and it is
+        harmless only by accident. The phrase path compares it against a text
+        SIMILARITY (`PhraseResult.score`, how well the words matched); the
+        single-word line fallback compares it against `TextMatch.score`, which
+        is the engine's own CONFIDENCE that it read the pixels correctly. Two
+        unrelated quantities behind one argument.
+
+        It cannot be observed today because Windows OCR reports a flat 1.0 for
+        every fragment — checked 8 September 2026, lines and words alike — so
+        the confidence filter never rejects anything. Add an engine that
+        reports real confidences and one number will start meaning both, with
+        the caller's 0.5 quietly doing something different depending on how
+        many words they typed. Split the argument in that same change; this is
+        the same shape as the RapidOCR engine that reported itself available
+        while never having been able to run.
         """
         if not target or not self._available:
             return None
@@ -552,6 +728,14 @@ class WindowsOcrService(IOcrEngine):
             self._init_error = ("No Windows OCR language pack found "
                                 "(Settings ▸ Time & language ▸ Language ▸ add English).")
             return False
+        # Asked once, here, rather than on every read: it is a WinRT static
+        # property, and `_fit` sits on the hot path of every Detect-text poll.
+        # Read from the API rather than hardcoded, so a future Windows that
+        # accepts more (or less) is honoured without a code change.
+        try:
+            self.max_dimension = int(self._mods[0].OcrEngine.max_image_dimension)
+        except Exception:
+            self.max_dimension = 10000      # documented value, since Win10 1507
         return True
 
     def _ocr_result(self, pil_img):

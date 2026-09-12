@@ -27,6 +27,41 @@ def _read(name):
         return fh.read()
 
 
+def _private_prefixes():
+    """`publish_source.PRIVATE`, read with `ast` and never by importing.
+
+    Empty in a public clone, where the publisher is itself withheld — and empty
+    is the right answer there, because nothing is hidden from that tree.
+
+    ⚠ Importing it instead costs an hour. `publish_source.py` reconfigures
+    `sys.stdout`/`sys.stderr` at import time, which inside pytest are the
+    capture objects; the full suite then produces no output and hangs, while
+    the single test passes in 0.3 s. A publishing tool is a program, not a
+    library.
+    """
+    import ast
+
+    tool = os.path.join(ROOT, "tools", "publish_source.py")
+    if not os.path.isfile(tool):
+        return ()
+    with open(tool, "rb") as fh:
+        tree = ast.parse(fh.read().decode("utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and any(
+                getattr(t, "id", "") == "PRIVATE" for t in node.targets):
+            return tuple(e.value for e in node.value.elts
+                         if isinstance(e, ast.Constant)
+                         and isinstance(e.value, str))
+    return ()
+
+
+def _is_withheld(relpath, private):
+    """Does `PRIVATE` hold this path back? Its own prefix semantics, on slashes."""
+    rel = relpath.replace(os.sep, "/")
+    return any(rel == p or rel.startswith(p.rstrip("/") + "/") or rel == p.rstrip("/")
+               for p in private)
+
+
 # ── licence ───────────────────────────────────────────────────────────────────
 def test_license_is_the_real_gpl3_not_a_summary_of_one():
     """A licence file has to be the licence, not a description of it.
@@ -800,6 +835,24 @@ def test_no_new_public_code_becomes_unreachable():
     searched = [p for p in searched
                 if os.path.basename(p) != os.path.basename(__file__)]
 
+    # ⚠ Scan only what the mirror actually publishes.
+    #
+    # `tools/` holds withheld files, and a public definition whose only caller
+    # lives in one of them is referenced *here* and unreferenced *there*. That
+    # is not hypothetical: `ed25519.encode_point` is called only by
+    # `tools/mint_license.py`, this test passed on every machine that could see
+    # the private half, and the public mirror's CI was red on it from
+    # 4 September to 12 September 2026 with a failing badge on the README.
+    #
+    # Restricting the search moves that finding from "someone eventually reads
+    # the CI log" to "the suite says so before you push". In a public clone
+    # `publish_source.py` is itself withheld, `_private` comes back empty, and
+    # the scan is unchanged — which is correct, because there nothing is hidden.
+    _private = _private_prefixes()
+    if _private:
+        searched = [p for p in searched
+                    if not _is_withheld(os.path.relpath(p, ROOT), _private)]
+
     defined = {}
     for path in app:
         with open(path, encoding="utf-8") as fh:
@@ -855,10 +908,10 @@ def test_no_setting_exists_that_nothing_reads():
 
     The allowlist here is deliberately **empty**. Every one of the remaining
     fields is read somewhere, so any new one that is not is a setting somebody
-    added and never wired up — which is the same defect as `--mandatory`
-    writing a flag no client acts on, and as `ocr.warmup` returning True having
-    done nothing. All three were found by hand this week; this is so the next
-    one is not.
+    added and never wired up — which is the same defect as `release.py
+    --mandatory` writing a flag no client acted on (retired 12 September 2026),
+    and as `ocr.warmup` returning True having done nothing. All three were
+    found by hand; this is so the next one is not.
 
     Counts a string reference too, because `settings.set("name", …)` and
     `getattr` are both real ways to reach one.
