@@ -1483,3 +1483,75 @@ def test_the_privacy_policys_revision_history_link_points_somewhere_real():
         "the revision-history link points at %r, which build_site.PAGES does "
         "not publish, so the history will be empty. It must name a rendered "
         "page: one of %s" % (published, sorted(rendered)))
+@needs_site
+def test_a_download_size_that_did_not_come_from_the_release_is_not_published():
+    """The page must not describe two different builds in one paragraph.
+
+    ⚠ `_released_manifest()` states the rule in its own docstring: an empty
+    dict means "could not establish", and every caller must treat that as "say
+    nothing" rather than as a value. `released_sha256()` honours it — the
+    checksum is omitted rather than invented. `_exe_size_mb()` did not: on a
+    failed fetch it quietly substituted whatever was sitting in `dist/`.
+
+    That is the local-build-as-published-fact mistake arriving through the back
+    door of a transient network error — the realistic way a wrong number gets
+    out, and one that leaves nothing behind afterwards to explain it. The page
+    prints the *released* file's SHA-256 two inches from the size.
+
+    A size cannot be omitted the way a checksum can ("a single ? MB file" is
+    not a sentence), so the fallback stays and the refusal lives at publish
+    time. Building and previewing locally are unaffected.
+    """
+    bs = _build_site_module()
+    bs._MANIFEST_CACHE.clear()
+    try:
+        assert not bs.size_is_a_guess(), "the flag is set before anything ran"
+
+        # The realistic failure, not a contrived one: GitHub unreachable.
+        import urllib.request
+        real = urllib.request.urlopen
+
+        def _down(*a, **k):
+            raise OSError("no route to host")
+
+        urllib.request.urlopen = _down
+        try:
+            bs.render()
+        finally:
+            urllib.request.urlopen = real
+
+        assert bs.size_is_a_guess(), (
+            "the size fell back to a local or hardcoded value and nothing "
+            "recorded that it had")
+
+        rc = bs.publish({}, Path("site") / "README.md", force=False)
+        assert rc != 0, (
+            "publish() shipped a page whose download size came from this "
+            "machine rather than from the release")
+    finally:
+        bs._MANIFEST_CACHE.clear()
+
+
+@needs_site
+def test_a_healthy_build_does_not_trip_the_size_gate():
+    """The twin. A gate that always fires would pass the test above forever.
+
+    ⚠ It would also make the site unpublishable, which is a worse failure than
+    the one being guarded against and would be discovered at the worst moment —
+    the next time somebody tries to ship a page.
+    """
+    bs = _build_site_module()
+    bs._MANIFEST_CACHE.clear()
+    try:
+        # Stand in for a reachable manifest describing this exact version.
+        bs._MANIFEST_CACHE["data"] = {
+            "version": bs.version.__version__,
+            "size": 77_789_743,
+            "sha256": "0" * 64,
+        }
+        assert bs._exe_size_mb() == 78
+        assert not bs.size_is_a_guess(), (
+            "a size read straight from the release manifest was recorded as a "
+            "guess, which would block every publish")
+    finally:
+        bs._MANIFEST_CACHE.clear()
