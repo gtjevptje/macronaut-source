@@ -678,3 +678,64 @@ def test_a_release_without_the_asset_says_so(monkeypatch):
         [{"name": "update.json", "url": "https://api.example.com/asset/2"}]))
     with pytest.raises(UpdateError, match="Macronaut.exe"):
         updater._api_asset_url("Macronaut.exe", "owner/repo", timeout=1)
+def test_when_the_rollback_also_fails_the_message_can_be_acted_on(tmp_path,
+                                                                  monkeypatch):
+    """The last line of defence's last line of defence.
+
+    ⚠ The rollback above is what stops a failed update leaving someone with no
+    Macronaut. This is what happens when the rollback *itself* fails: the app
+    is sitting in a file called `Macronaut.exe.old` and the only thing standing
+    between the user and a working install is the sentence they are shown.
+
+    So the sentence is the subject. It has to name a path that exists and that
+    really holds the old build — a message naming the wrong file, or a file
+    that is not there, is worse than no message, because it is the only
+    instruction a person has at the point where everything else has failed.
+
+    Rare, and total when it happens: no GUI is running at this point, nothing
+    is logged anywhere the user will look, and there is no second chance.
+    """
+    target = tmp_path / "Macronaut.exe"
+    target.write_bytes(b"OLD BUILD")
+    staged = tmp_path / "Macronaut-9.9.9.exe"
+    staged.write_bytes(b"NEW BUILD")
+    monkeypatch.setattr(updater, "_self_path", lambda: staged)
+
+    def no_copy(*a, **k):
+        raise OSError("disk full")
+
+    real_replace = os.replace
+    calls = {"n": 0}
+
+    def replace_once_then_fail(src, dst):
+        """Let the rename to .old through; refuse to put it back."""
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return real_replace(src, dst)
+        raise OSError("the file is locked")
+
+    monkeypatch.setattr(updater.shutil, "copy2", no_copy)
+    monkeypatch.setattr(updater.os, "replace", replace_once_then_fail)
+
+    said = []
+    monkeypatch.setattr(updater, "_fail", lambda msg: said.append(msg))
+
+    rc = updater.run_apply_mode(
+        ["x", updater.APPLY_FLAG, "--target", str(target),
+         "--pid", str(_dead_pid())])
+
+    assert rc == 1
+    assert said, "the worst outcome was not reported at all"
+    message = said[-1]
+
+    backup = tmp_path / "Macronaut.exe.old"
+    assert backup.exists(), (
+        "the old build is not where the rollback left it, so whatever the "
+        "message says cannot be followed")
+    assert backup.read_bytes() == b"OLD BUILD", (
+        "the file the user is pointed at is not their old build")
+    assert str(backup) in message, (
+        "the message does not name the file the old build is actually in:\n"
+        + message)
+    assert "Macronaut.exe" in message, (
+        "the message does not say what to rename it back to")
