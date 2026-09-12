@@ -344,8 +344,77 @@ def publish(ver: str, notes: str = "") -> None:
               "--notes", notes or f"Macronaut {ver}"])
     if r.returncode != 0:
         raise SystemExit("error: gh release create failed")
+
+    _prove_the_published_url_resolves(ver)
+
     print(f"\nPublished {tag}. Existing installs will find it within 6 hours, "
           "or immediately via Settings → Updates → Check now.")
+
+
+def _prove_the_published_url_resolves(ver: str) -> None:
+    """Fetch the URL the manifest hands to every client, right after publishing.
+
+    ⚠ **`UPDATE_REPO` is `gtjevptje/macronaut-releases`, a name this repository
+    no longer has.** It resolves only through GitHub's rename redirect, and it
+    is baked into every manifest and every shipped build — permanent, by the
+    rule in CLAUDE.md. The redirect dies the instant any repository takes that
+    name, at which point every install on earth silently stops updating and
+    nothing here would report it: `gh release create` would still have
+    succeeded, and the manifest would still look perfect.
+
+    This is the one moment the problem is cheap: the release exists, so the URL
+    should now resolve, and if it does not the person who just published is
+    still standing here. It also catches an upload that reported success but
+    attached nothing, and a typo in UPDATE_REPO on a first release.
+
+    ⚠ A HEAD request, and redirects followed on purpose — the redirect is the
+    thing under test. Failure prints rather than raises: the release is already
+    public by this point, so aborting would leave a published release and an
+    angry traceback, which helps nobody. The job here is to say so loudly.
+
+    ⚠ The status code is the whole test, and an earlier draft of this got that
+    wrong. It also checked whether the final URL still said `macronaut-releases`,
+    on the theory that a name-taken redirect would stop happening — but GitHub
+    hands a release asset off to a signed `release-assets.githubusercontent.com`
+    blob URL that names no repository at all, so that check could never fire.
+    If a repository did take the name, this path would simply 404, which the
+    status check already catches. The final URL is not printed for the same
+    reason: it is a single-use signed link with a JWT in it, and dumping it into
+    a release log is noise at best.
+    """
+    import urllib.error
+    import urllib.request
+
+    url = f"https://github.com/{_v.UPDATE_REPO}/releases/download/v{ver}/Macronaut.exe"
+    req = urllib.request.Request(url, method="HEAD")
+    try:
+        urllib.request.urlopen(req, timeout=30).close()
+    except urllib.error.HTTPError as exc:
+        # ⚠ The server answered, and said no. This is the interesting failure —
+        # and it has to be caught separately, because `urlopen` RAISES on 4xx
+        # rather than returning a response. An earlier draft tested
+        # `resp.status != 200` after the call, which can never be true: any
+        # non-2xx has already become an exception by then. Two dead branches in
+        # one function is enough to write the rule down — a code path that
+        # cannot execute reads exactly like one that has never failed.
+        print(f"\n⚠ THE PUBLISHED DOWNLOAD URL ANSWERED {exc.code}\n"
+              f"    {url}\n"
+              f"  Either the upload did not attach what it claimed, or "
+              f"`{_v.UPDATE_REPO}` has stopped redirecting because something "
+              f"took that name — in which case every install has silently "
+              f"stopped updating.")
+        return
+    except (urllib.error.URLError, OSError) as exc:
+        # No answer at all: offline, proxied, DNS. Says nothing about the
+        # release, so it must not be reported as if it did.
+        print(f"\n⚠ COULD NOT REACH GITHUB TO CHECK THE DOWNLOAD URL\n"
+              f"    {url}\n"
+              f"    {exc}\n"
+              f"  This is a problem with this machine's connection, not "
+              f"necessarily with the release. Check the address by hand.")
+        return
+
+    print(f"  ✓ the update URL every install uses still resolves:\n    {url}")
 
 
 def main(argv: list) -> int:

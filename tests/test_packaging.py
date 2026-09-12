@@ -1334,3 +1334,80 @@ def test_the_notices_name_every_dependency_that_is_actually_bundled():
           "Regenerate with the command at the bottom of that file — and add "
           "them to the command's package list too, which is how the last four "
           "went missing from both at once.")
+# ── The one check that runs after a release is already public ────────────────
+
+def _url_check(monkeypatch, capsys, behaviour):
+    """Run `_prove_the_published_url_resolves` with urlopen replaced.
+
+    ⚠ Patches `urllib.request.urlopen`, which conftest.py has already replaced
+    with a blocker for the whole session. Patching it again here is the
+    documented way to ask for a specific network behaviour — the stub wins for
+    the duration of the test and the blocker comes back after.
+    """
+    import urllib.request
+    import release
+
+    monkeypatch.setattr(urllib.request, "urlopen", behaviour)
+    release._prove_the_published_url_resolves("2.3.4")
+    return capsys.readouterr().out
+
+
+def test_a_reachable_download_url_is_reported_as_fine(monkeypatch, capsys):
+    class _Resp:
+        status = 200
+
+        def close(self):
+            pass
+
+    out = _url_check(monkeypatch, capsys, lambda *a, **k: _Resp())
+    assert "still resolves" in out
+    assert "⚠" not in out
+
+
+def test_a_download_url_that_404s_is_shouted_about(monkeypatch, capsys):
+    """⚠ The case this exists for. `UPDATE_REPO` is a name this repository no
+    longer has; it works only through GitHub's rename redirect, it is baked
+    into every shipped build, and it dies the moment anything takes that name.
+    Then every install stops updating and nothing else would say so — the
+    release itself published perfectly.
+    """
+    import urllib.error
+
+    def _gone(*a, **k):
+        raise urllib.error.HTTPError("u", 404, "Not Found", {}, None)
+
+    out = _url_check(monkeypatch, capsys, _gone)
+    assert "404" in out
+    assert "silently stopped updating" in out
+
+
+def test_being_offline_is_not_reported_as_a_broken_release(monkeypatch, capsys):
+    """⚠ A different failure with a different meaning, and conflating them is
+    how a warning gets ignored. No answer from the network says nothing at all
+    about the release, so it must not be worded as though it did.
+    """
+    def _offline(*a, **k):
+        raise OSError("getaddrinfo failed")
+
+    out = _url_check(monkeypatch, capsys, _offline)
+    assert "connection" in out.lower()
+    assert "silently stopped updating" not in out
+
+
+def test_the_publish_step_actually_calls_the_url_check():
+    """A check nothing calls is not a check.
+
+    ⚠ Reads the source rather than running `publish()`, which would need a
+    built .exe, a manifest and a live `gh`. What matters is that the call sits
+    in the publish path at all: the function was written first and wired in
+    second, and that is exactly the order in which a wiring step gets skipped.
+    """
+    src = _read("release.py")
+    assert "_prove_the_published_url_resolves(ver)" in src, (
+        "release.py defines the post-publish URL check but never calls it")
+    # It has to run after the release exists, or it is checking for something
+    # that is not there yet and will always warn.
+    assert src.index("gh\", \"release\", \"create") < src.index(
+        "_prove_the_published_url_resolves(ver)"), (
+        "the URL check runs before the release is created, so it can only ever "
+        "report a 404")
