@@ -1307,3 +1307,51 @@ def test_every_page_declares_a_favicon_that_is_actually_published():
             assert href[len(bs.SITE_URL):] in published, (
                 f"{name}: points at {href!r}, which is not in site/icons/ and "
                 f"so is never published — a 404 renders as no icon at all")
+@needs_site
+def test_the_structured_data_offers_only_what_can_actually_be_bought():
+    """What the page tells a machine has to match what it tells a person.
+
+    ⚠ The JSON-LD on the home page carried a flat
+    `{"name": "Pro", "price": "9.99"}` regardless of `ENFORCED`, while every
+    visible part of the pricing table was carefully generated from it. A
+    schema.org Offer with a price asserts something buyable now, so with
+    enforcement off the page was telling search engines there is a EUR 9.99
+    product while its own words said "there is no key, no limit and nothing to
+    buy".
+
+    That is the shop-versus-software disagreement `_pricing_blocks()` exists to
+    prevent, in the one place nobody had applied it and the only place read by
+    a machine rather than a person. Found 12 September 2026 by parsing the
+    deployed page's JSON-LD, not by reading the template.
+
+    ⚠ The visible block deliberately keeps the struck-through price as an
+    anchor. The structured data deliberately does not: there is no
+    strike-through in JSON, so the same gesture that reassures a reader
+    misinforms a crawler. The asymmetry is intended, and this test pins both
+    halves of it.
+    """
+    import json
+
+    bs = _build_site_module()
+    was = bs.entitlements.ENFORCED
+    try:
+        bs.entitlements.ENFORCED = False
+        offers = json.loads("[" + bs._pricing_blocks()["OFFERS_JSON"] + "]")
+        names = [o.get("name") for o in offers]
+        assert names == ["Free"], (
+            "with the tier switched off the page must advertise one free "
+            "offer and nothing purchasable, got: %r" % (names,))
+        assert offers[0]["price"] == "0"
+
+        bs.entitlements.ENFORCED = True
+        offers = json.loads("[" + bs._pricing_blocks()["OFFERS_JSON"] + "]")
+        names = [o.get("name") for o in offers]
+        assert names == ["Free", "Pro"], (
+            "with the tier switched on the Pro offer has to come back on its "
+            "own, got: %r" % (names,))
+        pro = offers[1]
+        # The bare number, because the symbol belongs in priceCurrency.
+        assert pro["price"] == re.sub(r"[^0-9.]", "", bs.entitlements.PRICE)
+        assert pro["priceCurrency"] == "EUR"
+    finally:
+        bs.entitlements.ENFORCED = was
