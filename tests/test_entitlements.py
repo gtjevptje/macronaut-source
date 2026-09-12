@@ -1524,10 +1524,38 @@ def test_a_download_size_that_did_not_come_from_the_release_is_not_published():
             "the size fell back to a local or hardcoded value and nothing "
             "recorded that it had")
 
-        rc = bs.publish({}, Path("site") / "README.md", force=False)
+        # ⚠ publish() shells out to `gh release view` for its version gate,
+        # which is a LIVE request to GitHub. conftest blocks urlopen, not
+        # subprocess, so the first draft of this test made a real network
+        # call on every suite run — the precise failure conftest exists for,
+        # and one this project has already had at twenty requests per file
+        # save. Both doors are stubbed.
+        import builtins
+        import shutil as _shutil
+        was_which, was_ver = _shutil.which, bs._published_version
+        _shutil.which = lambda name: "gh" if name == "gh" else was_which(name)
+        bs._published_version = lambda gh: ""      # nothing to compare against
+
+        printed = []
+        real_print = builtins.print
+        builtins.print = lambda *a, **k: printed.append(
+            " ".join(str(x) for x in a))
+        try:
+            rc = bs.publish({}, Path("site") / "README.md", force=False)
+        finally:
+            builtins.print = real_print
+            _shutil.which, bs._published_version = was_which, was_ver
+
         assert rc != 0, (
             "publish() shipped a page whose download size came from this "
             "machine rather than from the release")
+        # ⚠ And it has to refuse for THIS reason. `rc != 0` on its own is
+        # satisfied by "gh not found" and by the version gate, so without
+        # this the test would pass on a machine with no gh while guarding
+        # nothing at all.
+        assert any("download size" in line for line in printed), (
+            "publish() refused, but not over the size — this test would "
+            "pass with the size gate deleted:\n" + "\n".join(printed))
     finally:
         bs._MANIFEST_CACHE.clear()
 
