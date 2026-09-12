@@ -1252,3 +1252,85 @@ def test_no_document_states_a_file_size_that_is_no_longer_true():
         "these state a file size that no longer matches the file:\n"
         + "\n".join(offenders)
         + "\nSay it in words ('the biggest file here') or give `wc -c`.")
+def test_the_notices_name_every_dependency_that_is_actually_bundled():
+    """Every installed dependency has to appear in THIRD-PARTY-NOTICES.md.
+
+    ⚠ The document went out incomplete and nothing noticed. The release
+    attached to v2.3.4 — the one people are downloading — omits numpy,
+    PyMsgBox, PyRect and typing-extensions entirely, and all four are inside
+    the .exe. The existing test above checks three strings, which is why: a
+    document can satisfy "mentions PySide6" while missing a quarter of what it
+    is supposed to list.
+
+    ⚠ **The four that were missing are all TRANSITIVE**, pulled in by
+    opencv-python and pyautogui rather than named in requirements.txt. Checking
+    the direct dependencies would not have caught any of them, which is why
+    this walks the closure instead.
+
+    ⚠ Only packages that are actually **installed** count. The closure of
+    pynput and pyautogui names pyobjc, evdev and python-xlib — the macOS and
+    Linux backends — which are never installed here and never bundled. Asking
+    the environment what it has avoids listing platforms this app does not run
+    on.
+
+    ⚠ A `foo.*` entry in the document covers that prefix. The six winrt split
+    projection packages are one project at one version under one licence, and
+    the document says so in one row rather than six. That is a real entry, not
+    an omission.
+    """
+    import importlib.metadata as md
+
+    # The direct dependencies, as requirements.txt names them. pyinstaller is
+    # deliberately absent: it builds the .exe, it does not go inside it.
+    direct = ["PySide6", "pynput", "interception-python", "pyautogui",
+              "opencv-python", "Pillow", "pywin32",
+              "winrt-Windows.Media.Ocr", "winrt-Windows.Graphics.Imaging",
+              "winrt-Windows.Storage.Streams", "winrt-Windows.Globalization",
+              "winrt-Windows.Foundation", "winrt-Windows.Foundation.Collections"]
+
+    def norm(name):
+        return re.sub(r"[-_.]+", "-", name.strip()).lower()
+
+    def is_installed(name):
+        try:
+            md.version(name)
+            return True
+        except Exception:
+            return False
+
+    if not any(is_installed(d) for d in direct):
+        pytest.skip("none of the dependencies are installed in this environment")
+
+    seen, queue = set(), list(direct)
+    while queue:
+        name = queue.pop()
+        key = norm(name)
+        if key in seen or not is_installed(name):
+            continue
+        seen.add(key)
+        for req in (md.requires(name) or []):
+            # `extra == "..."` markers are optional extras nobody installs.
+            if "extra ==" in req:
+                continue
+            dep = re.split(r"[<>=!;\[ ~]", req.strip())[0]
+            if dep and norm(dep) not in seen:
+                queue.append(dep)
+
+    text = _read("THIRD-PARTY-NOTICES.md")
+    flat = norm(text).replace("-", "")
+    # Prefixes the document covers with a wildcard, e.g. "winrt-Windows.*".
+    wildcards = [norm(p).replace("-", "")
+                 for p in re.findall(r"([A-Za-z0-9_.-]+)\.\*", text)]
+
+    missing = sorted(
+        p for p in seen
+        if p.replace("-", "") not in flat
+        and not any(p.replace("-", "").startswith(w) for w in wildcards))
+
+    assert not missing, (
+        "THIRD-PARTY-NOTICES.md does not name these bundled dependencies:\n  "
+        + "\n  ".join(missing)
+        + "\n\nThey ship inside the .exe, so they belong in the notices. "
+          "Regenerate with the command at the bottom of that file — and add "
+          "them to the command's package list too, which is how the last four "
+          "went missing from both at once.")
