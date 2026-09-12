@@ -191,3 +191,52 @@ def test_the_readme_only_names_tabs_that_exist():
         + _NL + "The app's real tabs are: %r" % (sorted(real_tabs),)
         + _NL + "Everything else is a face - say face, or name the control that opens it."
     )
+
+
+# ⚠ Pages that are *copied* rather than rendered. `build_site.py` renders every
+# page in `PAGES` from the app's own constants, so a rename reaches them for
+# free — and that is exactly why this one was missed. `site/root/` is pushed to
+# the user-pages repo verbatim, so nothing regenerates it and nothing compared
+# it to anything. It sat live on https://gtjevptje.github.io/ saying "edit it
+# as a flow" for the whole of the rename, and was found by curl'ing the
+# deployed page rather than by any test in this file.
+#
+# The lesson generalises past this one page: the guard has to follow what is
+# *published*, not what is *generated*.
+HAND_MAINTAINED_PAGES = [
+    os.path.join("site", "root", "index.html"),
+]
+
+
+@pytest.mark.parametrize("page", HAND_MAINTAINED_PAGES)
+def test_hand_maintained_pages_call_a_script_a_script(page):
+    """A published page nothing regenerates still has to use the word.
+
+    Skips rather than fails when the file is absent: `site/` is withheld from
+    the public mirror, so on a clean clone this page does not exist and the
+    test must not turn a correct absence into a red build.
+    """
+    path = os.path.join(REPO, page)
+    if not os.path.exists(path):
+        pytest.skip(page + " is not in this tree (site/ is withheld)")
+
+    with open(path, "rb") as fh:
+        lines = fh.read().decode("utf-8").splitlines()
+
+    offenders = []
+    for n, line in enumerate(lines, 1):
+        if any(ok in line for ok in DOC_ALLOWED):
+            continue
+        found = RETIRED.search(line)
+        if found:
+            offenders.append("%s:%d  %r in %r"
+                             % (page, n, found.group(0), line.strip()[:90]))
+
+    assert not offenders, (
+        "A published page that nothing regenerates still calls a script "
+        "something else:"
+        + _NL + "  " + (_NL + "  ").join(offenders)
+        + _NL + _NL
+        + "This page is copied verbatim by build_site.py, so no rename "
+          "reaches it on its own."
+    )
