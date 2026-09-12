@@ -1441,3 +1441,45 @@ def test_nothing_in_the_licence_path_can_reach_the_network():
         + "\n\nThe site says activation is offline and tells us nothing. "
           "If that has genuinely changed, the privacy page and the FAQ have to "
           "change with it — in the same commit.")
+@needs_site
+def test_the_privacy_policys_revision_history_link_points_somewhere_real():
+    """The policy promises its old wording stays in a public history.
+
+    ⚠ It pointed at `macronaut-source/commits/main/site/privacy.template.html`
+    until 12 September 2026, and that path has never existed there: `site/` is
+    withheld from the public mirror on purpose, so the history was empty. The
+    URL answered **200** — GitHub renders an empty commit list rather than a
+    404 — so a link checker would have passed it and did. Of everything on that
+    page it is the worst one to get wrong: it is the mechanism by which a
+    reader checks whether a privacy policy quietly changed.
+
+    ⚠ So this asserts the two things that were actually wrong, not that the
+    link exists: it must point at a repository that publishes the file, and at
+    a path that repository has. Nothing here can reach the network, which is
+    the point — the failure was invisible to anything that only fetched it.
+    """
+    import re as _re
+
+    src = (Path(__file__).resolve().parent.parent
+           / "site" / "privacy.template.html").read_text(encoding="utf-8")
+
+    m = _re.search(r'href="\{\{(\w+)\}\}(/commits/[^"]+)"', src)
+    assert m, ("the privacy policy no longer links to a revision history at "
+               "all, and the paragraph above it still promises one")
+    token, path = m.group(1), m.group(2)
+
+    # ⚠ SOURCE_URL is the GPL mirror, which withholds site/. Pointing the
+    # history of a *page* at it is the bug this test exists for.
+    assert token == "REPO_URL", (
+        "the revision-history link uses {{%s}}. site/ is withheld from the "
+        "source mirror, so a link to the template's history there resolves to "
+        "an empty commit list with a 200. The rendered page lives in the site "
+        "repo — use {{REPO_URL}}." % token)
+
+    published = path.split("/commits/main/", 1)[-1]
+    bs = _build_site_module()
+    rendered = {name for _tpl, name, _p, _f in bs.PAGES}
+    assert published in rendered, (
+        "the revision-history link points at %r, which build_site.PAGES does "
+        "not publish, so the history will be empty. It must name a rendered "
+        "page: one of %s" % (published, sorted(rendered)))

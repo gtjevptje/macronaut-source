@@ -81,8 +81,11 @@ def test_parse_manifest_requires_fields(missing):
 
 
 def test_parse_manifest_rejects_http_url():
-    # Plain http would let anyone on the path swap the binary.
-    with pytest.raises(UpdateError):
+    # Plain http would let anyone on the path swap the binary. With no code
+    # signing, https plus the manifest hash is the whole defence — and the
+    # manifest is fetched over the same channel, so an attacker who can serve
+    # one can serve both.
+    with pytest.raises(UpdateError, match="(?i)https"):
         updater.parse_manifest(_manifest(url="http://example.com/Macronaut.exe"))
 
 
@@ -192,7 +195,18 @@ def test_download_succeeds_and_names_by_version(tmp_path, monkeypatch):
 
 
 def test_https_is_enforced_on_fetch():
-    with pytest.raises(UpdateError):
+    """⚠ Matches the message, not just the type.
+
+    Without `match`, this passes for any UpdateError at all. `_get` re-raises
+    network failures unwrapped today, so it happened to be sound — but it is
+    one reasonable refactor away from being a test that passes because the
+    request failed rather than because it was refused. It also means that if
+    the guard ever goes, this reaches `urlopen` with a plain-http URL: the only
+    thing standing between that and a real request to example.com is the
+    session-wide blocker in conftest, and this suite has a history of
+    discovering it was making live requests.
+    """
+    with pytest.raises(UpdateError, match="(?i)https"):
         updater._get("http://example.com/update.json")
 
 
@@ -604,3 +618,63 @@ def test_the_suite_cannot_reach_the_network():
     assert getattr(urllib.request.urlopen, "__name__", "") == "_blocked", (
         "conftest's network guard is not installed — the suite can make real "
         "requests to GitHub. See _no_live_update_check.")
+def _fake_api(assets):
+    """A stand-in for the api.github.com releases/latest response."""
+    body = json.dumps({"assets": assets}).encode("utf-8")
+
+    class _Resp:
+        def read(self, n=-1):
+            return body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    return lambda *a, **k: _Resp()
+
+
+def test_an_asset_url_from_the_api_must_also_be_https(monkeypatch):
+    """The third `_require_https` call site, and the one that was untested.
+
+    ⚠ The other two check a URL this project wrote: the manifest's `url`, and
+    whatever `_get` was handed. This one checks a URL that arrives inside a
+    **remote JSON response**, which is the only one of the three that is not
+    ours. It is the fallback route — the API host, used when the web host
+    refuses — so it runs exactly when something has already gone unusually
+    wrong.
+
+    Macronaut ships unsigned. With no signature to fall back on, https and the
+    manifest hash are the whole defence, and a downgrade here would hand the
+    bytes to whoever is on the path.
+    """
+    monkeypatch.setattr(updater, "_get", _fake_api(
+        [{"name": "Macronaut.exe", "url": "http://example.com/asset"}]))
+    with pytest.raises(UpdateError, match="(?i)https"):
+        updater._api_asset_url("Macronaut.exe", "owner/repo", timeout=1)
+
+
+def test_an_https_asset_url_from_the_api_is_accepted(monkeypatch):
+    """The twin, so the test above cannot pass by refusing everything.
+
+    ⚠ Without this, `_api_asset_url` could raise on every URL it is given and
+    the test above would be perfectly happy — while the fallback route, the one
+    that only runs when the normal one has failed, was broken for everyone.
+    """
+    monkeypatch.setattr(updater, "_get", _fake_api(
+        [{"name": "Macronaut.exe", "url": "https://api.example.com/asset/1"}]))
+    assert updater._api_asset_url(
+        "Macronaut.exe", "owner/repo", timeout=1) == "https://api.example.com/asset/1"
+
+
+def test_a_release_without_the_asset_says_so(monkeypatch):
+    """Names the missing asset rather than failing somewhere later.
+
+    The realistic shape: a release published with the manifest attached and the
+    .exe forgotten. Every install then asks for a file that is not there.
+    """
+    monkeypatch.setattr(updater, "_get", _fake_api(
+        [{"name": "update.json", "url": "https://api.example.com/asset/2"}]))
+    with pytest.raises(UpdateError, match="Macronaut.exe"):
+        updater._api_asset_url("Macronaut.exe", "owner/repo", timeout=1)
