@@ -5645,3 +5645,113 @@ def test_the_fixture_really_silences_the_offer(main_mod, qapp, monkeypatch):
             pass
         w.hide()
         recovery.clear()
+# ── The privacy page's promises, which nothing enforced ──────────────────────
+#
+# ⚠ Found 12 September 2026 by mutation, not by reading. Three edits to shipping
+# code, each breaking a sentence the privacy page states in as many words, and
+# the whole suite — 1145 tests — stayed green for all three:
+#
+#   * delete the `return` for a user who chose "off"  -> reports upload anyway
+#   * make `_discard_all()` a no-op on a decline      -> declined reports persist
+#   * delete the `auto_check_updates` guard           -> the off switch does nothing
+#
+# The near miss is worth recording, because it looks like coverage.
+# `test_a_declined_prompt_is_never_asked_again` already drives `_run` with
+# "off" — and asserts only that the dialog is not shown again. With the guard
+# removed no dialog appears *and* the report is uploaded, so it passes. It was
+# testing the asking, not the sending. A test named for half the promise is how
+# the other half goes unguarded.
+#
+# These assert on the thing the page promises: what leaves the machine.
+
+
+def test_someone_who_said_no_has_nothing_uploaded(qapp, crash_home, monkeypatch):
+    """`crash_reports = "off"` must not send. The page: "only if you say yes"."""
+    import crash_ui, crashsend
+    _queue_one(crash_home)
+    monkeypatch.setattr(crashsend, "enabled", lambda: True)
+    monkeypatch.setattr(crash_ui, "_start_upload",
+                        lambda w: pytest.fail(
+                            "a crash report was uploaded from someone who "
+                            "chose 'off' — the privacy page promises this "
+                            "cannot happen"))
+    crash_ui._run(None, _Settings("off"))
+
+
+def test_an_unanswered_prompt_uploads_nothing_on_its_own(qapp, crash_home,
+                                                         monkeypatch):
+    """An unrecognised stored value must fail closed, not fall through to send.
+
+    ⚠ The branch is `elif choice != "on": return`, so every value that is
+    neither "ask" nor "on" lands here — including a settings file hand-edited
+    to something meaningless, and including the empty string. Failing *open*
+    there would upload from a machine whose owner never said yes.
+    """
+    import crash_ui, crashsend
+    _queue_one(crash_home)
+    monkeypatch.setattr(crashsend, "enabled", lambda: True)
+    monkeypatch.setattr(crash_ui, "_start_upload",
+                        lambda w: pytest.fail(
+                            "an unrecognised crash_reports value was treated "
+                            "as consent"))
+    crash_ui._run(None, _Settings("something-nobody-wrote"))
+
+
+def test_turning_the_update_check_off_stops_it_contacting_anything(monkeypatch):
+    """The page: "You can turn the check off in Settings, and Macronaut then
+    never contacts the network on its own at all."
+
+    ⚠ Calls `_maybe_check_updates` unbound against a stand-in rather than
+    building a MainWindow. The guard is two lines at the top of that method and
+    a real window drags in the whole application to reach them; what matters is
+    that the setting is consulted before anything is started, and that is
+    visible from here. `_upd_ctl.start` is the single door to the network on
+    this path — `updater` reaches urlopen only through it — so a stub that
+    fails if called is the whole assertion.
+    """
+    import main
+
+    class _Ctl:
+        def start(self, download=False):
+            pytest.fail("the update check ran with auto_check_updates off — "
+                        "the privacy page promises it does not")
+
+    class _Win:
+        UPDATE_CHECK_INTERVAL = main.MainWindow.UPDATE_CHECK_INTERVAL
+        _upd_ctl = _Ctl()
+
+        def __init__(self):
+            self._settings = _Settings()
+            self._settings.s.auto_check_updates = False
+            self._settings.s.last_update_check = 0.0
+
+    main.MainWindow._maybe_check_updates(_Win())
+
+
+def test_leaving_the_update_check_on_still_lets_it_run(monkeypatch):
+    """The twin of the test above, so it cannot pass by never running at all.
+
+    ⚠ Without this, a `_maybe_check_updates` that returned unconditionally
+    would satisfy the previous test perfectly. Same shape as the guard on the
+    guard in conftest.py.
+    """
+    import main
+
+    started = []
+
+    class _Ctl:
+        def start(self, download=False):
+            started.append(download)
+
+    class _Win:
+        UPDATE_CHECK_INTERVAL = main.MainWindow.UPDATE_CHECK_INTERVAL
+        _upd_ctl = _Ctl()
+
+        def __init__(self):
+            self._settings = _Settings()
+            self._settings.s.auto_check_updates = True
+            self._settings.s.last_update_check = 0.0
+
+    main.MainWindow._maybe_check_updates(_Win())
+    assert started, ("the check did not run with the setting on, so the test "
+                     "above proves nothing")

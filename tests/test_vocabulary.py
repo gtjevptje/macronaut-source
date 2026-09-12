@@ -297,3 +297,54 @@ def test_the_recorded_repo_descriptions_use_the_word():
         + "Fix it here, then push the live value: "
           "gh api -X PATCH repos/gtjevptje/<repo> -f description=..."
     )
+
+
+def test_the_social_card_says_script():
+    """The words baked into the share image, which no grep of the site finds.
+
+    ⚠ `site/assets/social-card.png` is the picture every link to this project
+    unfurls into on Discord, Slack, X and LinkedIn, and it is the GitHub social
+    preview for the source repo — the first result on Bing for "Macronaut auto
+    clicker", per the script's own docstring. Its text is *pixels*. Searching the
+    deployed site for the retired word returns nothing whether the card is right
+    or wrong, which is how it survived the rename, the site deploy and the
+    mirror republish on 12 September 2026.
+
+    Scans the `lines` list specifically, not the file. The file has to be able
+    to discuss the retired word in its comments to explain any of this, and a
+    line-based scan would trip on the explanation. The `lines` list is exactly
+    the set of strings that reach the image.
+    """
+    path = os.path.join(REPO, "tools", "make_social_card.py")
+    if not os.path.exists(path):
+        pytest.skip("tools/make_social_card.py is not in this tree (it is withheld)")
+
+    with open(path, "rb") as fh:
+        tree = ast.parse(fh.read().decode("utf-8"))
+
+    drawn = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        names = [t.id for t in node.targets if isinstance(t, ast.Name)]
+        if "lines" not in names:
+            continue
+        for sub in ast.walk(node.value):
+            if isinstance(sub, ast.Constant) and isinstance(sub.value, str):
+                drawn.append(sub.value)
+
+    assert drawn, (
+        "found no strings in a `lines` assignment in tools/make_social_card.py - "
+        "the list was renamed or restructured, and this test silently "
+        "stopped checking the words on the card.")
+
+    offenders = [s for s in drawn
+                 if RETIRED.search(s)
+                 and not any(ok in s for ok in DOC_ALLOWED)]
+
+    assert not offenders, (
+        "The social card still calls a script something else:"
+        + _NL + "  " + (_NL + "  ").join(repr(s) for s in offenders)
+        + _NL + _NL
+        + "Fix it, then re-run: python tools/make_social_card.py"
+    )
