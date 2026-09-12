@@ -5755,3 +5755,74 @@ def test_leaving_the_update_check_on_still_lets_it_run(monkeypatch):
     main.MainWindow._maybe_check_updates(_Win())
     assert started, ("the check did not run with the setting on, so the test "
                      "above proves nothing")
+def test_the_consent_dialog_offers_to_show_what_would_be_sent(qapp, crash_home,
+                                                              monkeypatch):
+    """The privacy page promises a button that reads the exact report.
+
+    ⚠ Verbatim: "there is a button to read the exact report before you decide".
+    The button existed and nothing checked that it did anything. Unwiring its
+    `clicked` connection left all 1156 tests passing — a consent dialog that
+    cannot show what is being consented to, which is the one thing that makes
+    the question answerable.
+
+    Asserts the wiring, not the label. A button whose text is right and whose
+    connection is gone looks perfect in a screenshot.
+    """
+    import crash_ui
+    _queue_one(crash_home)
+
+    shown = []
+    monkeypatch.setattr(crash_ui, "show_reports", lambda parent=None: shown.append(parent))
+
+    dlg = crash_ui.ConsentDialog(pending=1)
+    try:
+        assert dlg._show_btn.isEnabled(), (
+            "the report button is disabled while a report is waiting")
+        dlg._show_btn.click()
+        assert shown, (
+            "clicking 'See what would be sent' did nothing — the privacy page "
+            "promises it reads the exact report")
+    finally:
+        dlg.hide()
+
+
+def test_the_button_is_dead_when_there_is_nothing_to_show(qapp, crash_home):
+    """The twin, so the test above cannot pass by the button always working.
+
+    Offering to show a report that does not exist is its own small lie, and an
+    always-enabled button would satisfy the previous test perfectly.
+    """
+    import crash_ui
+    dlg = crash_ui.ConsentDialog(pending=0)
+    try:
+        assert not dlg._show_btn.isEnabled()
+    finally:
+        dlg.hide()
+
+
+def test_the_viewer_shows_the_report_that_is_actually_queued(qapp, crash_home):
+    """"The exact report" has to mean this one, not a specimen.
+
+    ⚠ Reads the widget's text rather than trusting that a viewer was opened.
+    The promise is about the contents: a dialog that appears and shows a
+    template, or an empty box, would pass any check that only counts windows.
+    """
+    import crash_ui
+    _queue_one(crash_home)
+
+    from PySide6.QtWidgets import QPlainTextEdit, QTextEdit
+    viewer = crash_ui.ReportViewer()
+    try:
+        boxes = viewer.findChildren(QPlainTextEdit) + viewer.findChildren(QTextEdit)
+        assert boxes, "the report viewer has no text area"
+        shown = "\n".join(b.toPlainText() for b in boxes)
+        assert shown.strip() and shown.strip() != "(unreadable)", (
+            "the viewer opened on an empty report")
+        # Both come from the queued fixture, so this is that report and not a
+        # sample: the version it crashed on and the step it was running.
+        assert "2.0.8" in shown, "the viewer is not showing the queued report"
+        assert "n1" in shown, (
+            "the viewer does not show which step was running, which is most of "
+            "what a person is being asked to consent to")
+    finally:
+        viewer.hide()

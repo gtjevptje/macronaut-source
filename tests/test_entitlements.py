@@ -1355,3 +1355,89 @@ def test_the_structured_data_offers_only_what_can_actually_be_bought():
         assert pro["priceCurrency"] == "EUR"
     finally:
         bs.entitlements.ENFORCED = was
+@needs_site
+def test_the_faq_does_not_describe_limits_that_are_switched_off():
+    """Two answers claimed the tier was enforced while it was not.
+
+    ⚠ The pricing table was annotated on 3 September 2026 — "not yet; there is
+    no limit today", "included for everyone right now" — and these two answers
+    were missed, so the page contradicted itself three sections apart about the
+    only thing a visitor is deciding on. `build_site._pricing_blocks()` names
+    this as the *worse* direction: a free-tier cap and a "will not run until
+    licensed" are both reasons not to download, and with `ENFORCED` off neither
+    is true.
+
+    ⚠ Pins both directions. A note that never went away would be just as wrong
+    once the tier is switched on, and it would be wrong in the direction that
+    costs money rather than downloads.
+    """
+    bs = _build_site_module()
+    was = bs.entitlements.ENFORCED
+
+    def faq_blob():
+        return " ".join(str(v) for v in bs.render()[0].values())
+
+    try:
+        bs.entitlements.ENFORCED = False
+        off = faq_blob()
+        assert "That cap is not switched on yet" in off, (
+            "the FAQ states the free-tier step cap as current fact while "
+            "ENFORCED is False")
+        assert "Nothing is gated today" in off, (
+            "the FAQ says Pro steps will not run while ENFORCED is False and "
+            "every one of them runs")
+
+        bs.entitlements.ENFORCED = True
+        on = faq_blob()
+        assert "That cap is not switched on yet" not in on, (
+            "the 'not yet' note survived into an enforced build, where it "
+            "tells a paying customer the cap they are paying to lift is not real")
+        assert "Nothing is gated today" not in on
+    finally:
+        bs.entitlements.ENFORCED = was
+def test_nothing_in_the_licence_path_can_reach_the_network():
+    """The site promises activation is offline. This makes that structural.
+
+    ⚠ Verbatim, twice: "Your licence key is verified offline — activating does
+    not tell us anything, because there is nothing for it to tell", and "no
+    machine fingerprinting". Those are the reasons somebody buys from a
+    one-person operation instead of a company with a licence server, and today
+    they are true only because nobody has written the code — nothing enforced
+    it.
+
+    ⚠ A source scan rather than a behavioural test, deliberately. The promise
+    is about what the program *cannot* do, and a runtime test can only prove
+    that one particular path did not call out this time. `conftest.py` blocks
+    urlopen for the whole suite, so an activation callback added tomorrow would
+    not fail here at all — it would fail somewhere unrelated, with a message
+    about the network being disabled, and be "fixed" by stubbing it.
+
+    Matches imports and calls, not the words: prose about not phoning home is
+    exactly what these files should contain, and a naive substring check would
+    forbid its own rationale.
+    """
+    import glob
+
+    banned = re.compile(
+        r"^\s*(?:from|import)\s+(?:urllib|http|requests|socket|ftplib|"
+        r"telnetlib|smtplib|xmlrpc|aiohttp|httpx)\b"
+        r"|\burlopen\s*\(|\brequests\.(?:get|post|put|patch|delete)\s*\("
+        r"|\bsocket\.(?:socket|create_connection)\s*\(",
+        re.MULTILINE)
+
+    offenders = []
+    for name in ("licensing.py", "licensing_ui.py", "entitlements.py",
+                 "ed25519.py"):
+        path = Path(__file__).resolve().parent.parent / name
+        if not path.is_file():
+            continue
+        with open(path, "r", encoding="utf-8") as fh:
+            for hit in banned.finditer(fh.read()):
+                offenders.append("%s: %s" % (name, hit.group(0).strip()))
+
+    assert not offenders, (
+        "the licence path can reach the network:\n  "
+        + "\n  ".join(offenders)
+        + "\n\nThe site says activation is offline and tells us nothing. "
+          "If that has genuinely changed, the privacy page and the FAQ have to "
+          "change with it — in the same commit.")
