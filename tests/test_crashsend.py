@@ -327,3 +327,127 @@ def test_an_unreadable_report_is_dropped_not_retried(tmp_path, monkeypatch):
                         "urlopen", lambda *a, **k: _Resp(200))
     sent, remaining = crashsend.send_pending(tmp_path, DSN)
     assert (sent, remaining) == (0, 0)
+# ── What a breadcrumb is allowed to carry off the machine ────────────────────
+#
+# ⚠ `crashsend.to_event` forwards breadcrumb fields WHOLESALE:
+#
+#     data = {k: v for k, v in c.items() if k not in ("t", "kind")}
+#
+# Every key a breadcrumb happens to carry is uploaded. That is fine for the
+# seven that exist, and it is a standing invitation for the eighth: a
+# `breadcrumb("save", name=script.name)` added in a hurry would put the names
+# of people's scripts into Sentry, and the privacy page says in a list of five
+# bullets that those never leave the machine.
+#
+# `crashreport._scrub` does not help here. It removes the Windows account name
+# and the home path — it has no idea what a script name is, and it is not
+# supposed to.
+#
+# So the field names are pinned. Adding one is fine; adding one *without
+# noticing it leaves the machine* is what this prevents. The reason each is
+# safe is written beside it, because "it was already there" is not one.
+ALLOWED_CRUMB_FIELDS = {
+    # crashreport._env(), recorded at arming time. Build and platform only.
+    "version", "frozen", "python", "os", "os_release", "arch",
+    # The exception class name, e.g. "KeyError". Never its message.
+    "type",
+    # ⚠ Qt's own warning text. The one free-form string in this list, and the
+    # only reason it is here is that Qt writes it: it is library diagnostics
+    # ("QThread: Destroyed while thread is still running"), not anything the
+    # user typed. It is scrubbed and capped at 400 characters like the rest.
+    "level", "msg",
+    # A count, a multiplier, a bool and the backend's name. Describe the run,
+    # not what it did: no node titles, no typed text, no coordinates.
+    "nodes", "speed", "detached", "backend",
+    "running",
+    # Two integers.
+    "sent", "remaining",
+}
+
+
+def test_a_breadcrumb_cannot_quietly_start_carrying_user_content():
+    """Pin every field name any breadcrumb passes to the uploader.
+
+    ⚠ Reads the call sites rather than running them, because the risk is a
+    call site that no test exercises — which is most of them. `**_env()` is
+    expanded from the function it names for the same reason.
+    """
+    import ast
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    def env_keys():
+        """The keys `_env()` returns, read out of its source."""
+        src = open(os.path.join(root, "crashreport.py"), encoding="utf-8").read()
+        tree = ast.parse(src)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "_env":
+                for sub in ast.walk(node):
+                    if isinstance(sub, ast.Dict):
+                        return {k.value for k in sub.keys
+                                if isinstance(k, ast.Constant)}
+        return set()
+
+    found, unresolved = {}, []
+    for name in sorted(os.listdir(root)):
+        if not name.endswith(".py"):
+            continue
+        try:
+            tree = ast.parse(open(os.path.join(root, name),
+                                  encoding="utf-8").read())
+        except SyntaxError:                                 # pragma: no cover
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            label = getattr(node.func, "attr", None) or getattr(node.func, "id", None)
+            if label != "breadcrumb":
+                continue
+            where = "%s: breadcrumb(%s)" % (
+                name,
+                node.args[0].value if node.args and isinstance(node.args[0], ast.Constant)
+                else "?")
+            for kw in node.keywords:
+                if kw.arg:
+                    found[kw.arg] = where
+                elif isinstance(kw.value, ast.Call) and getattr(
+                        kw.value.func, "id", None) == "_env":
+                    for k in env_keys():
+                        found[k] = where + " via _env()"
+                else:
+                    unresolved.append(where)
+
+    assert found, "no breadcrumb call sites found — this test has stopped working"
+
+    assert not unresolved, (
+        "a breadcrumb is splatted from something this test cannot read:\n  "
+        + "\n  ".join(sorted(set(unresolved)))
+        + "\n\nEvery field it carries is uploaded. Name them, or teach this "
+          "test how to expand it.")
+
+    new = sorted(f"{k}  ({v})" for k, v in found.items()
+                 if k not in ALLOWED_CRUMB_FIELDS)
+    assert not new, (
+        "these breadcrumb fields are uploaded and are not on the allowlist:\n  "
+        + "\n  ".join(new)
+        + "\n\ncrashsend.to_event forwards every breadcrumb key wholesale. "
+          "Before adding one, check it against the privacy page's list of what "
+          "never leaves the machine — scripts and their names, keystrokes, "
+          "screen contents, settings, clipboard. Then add it to "
+          "ALLOWED_CRUMB_FIELDS with the reason it is safe.")
+
+
+def test_the_uploader_still_forwards_breadcrumb_fields():
+    """The allowlist above is only worth anything while that is true.
+
+    ⚠ If `to_event` ever stopped copying breadcrumb data — or started picking
+    named fields the way it already does for `doing` — the test above would
+    keep passing while guarding nothing at all.
+    """
+    src = open(os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "crashsend.py"), encoding="utf-8").read()
+    assert 'for k, v in c.items() if k not in ("t", "kind")' in src, (
+        "crashsend.to_event no longer forwards breadcrumb fields wholesale. "
+        "That is an improvement, but the allowlist above now guards nothing — "
+        "rewrite it against however the fields are chosen now.")
