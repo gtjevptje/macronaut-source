@@ -5826,3 +5826,85 @@ def test_the_viewer_shows_the_report_that_is_actually_queued(qapp, crash_home):
             "what a person is being asked to consent to")
     finally:
         viewer.hide()
+
+
+# ── "Macronaut is completely free" inside the app (16 September 2026) ─────────
+#
+# The maintainer's rule: while `entitlements.ENFORCED` is False, nothing a user
+# sees mentions a paid version. The canvas PRO chip already followed the switch
+# (`entitlements.show_pro_badge`); the palette tooltips and the Settings licence
+# card did not. Both directions are pinned, because the day the tier is switched
+# on, both have to come back.
+
+def _palette_tips(tab):
+    return [b.toolTip() for b in getattr(tab, "_palette_btns", []) or []]
+
+
+def test_no_palette_tooltip_names_a_price_while_the_tier_is_off(
+        main_mod, monkeypatch, qapp):
+    import entitlements
+    import licensing
+    monkeypatch.setattr(licensing, "is_pro", lambda: False)
+
+    monkeypatch.setattr(entitlements, "ENFORCED", False)
+    tab = main_mod.SequenceTab(main_mod.SettingsManager())
+    try:
+        tips = _palette_tips(tab)
+        assert tips, "the palette has no buttons to check"
+        assert not [t for t in tips if "Pro" in t], (
+            "a palette tooltip advertises Macronaut Pro while the tier is off")
+
+        # The refresh path writes the tooltips a second time, independently.
+        tab.refresh_licence_state()
+        assert not [t for t in _palette_tips(tab) if "Pro" in t]
+
+        monkeypatch.setattr(entitlements, "ENFORCED", True)
+        tab.refresh_licence_state()
+        assert [t for t in _palette_tips(tab) if "Pro" in t], (
+            "switching the tier on must bring the Pro tooltips back")
+    finally:
+        tab.hide()
+
+
+def test_the_licence_card_is_hidden_while_the_tier_is_off(
+        main_mod, monkeypatch, qapp):
+    """A card titled "Your licence" with an "Enter a licence key" button is a
+    mention of a paid version. Only one key was ever issued (to the
+    maintainer), so hiding the entry point strands nobody — and a copy that
+    already holds a key keeps its card, because removing it must stay
+    possible."""
+    import entitlements
+    import licensing
+
+    monkeypatch.setattr(entitlements, "ENFORCED", False)
+    monkeypatch.setattr(licensing, "is_pro", lambda: False)
+    tab = main_mod.SettingsTab(main_mod.SettingsManager())
+    try:
+        tab._refresh_licence_status()
+        assert tab._lic_group.isHidden(), (
+            "the licence card is visible while Macronaut is presented as free")
+
+        monkeypatch.setattr(licensing, "is_pro", lambda: True)
+        tab._refresh_licence_status()
+        assert not tab._lic_group.isHidden(), (
+            "a copy that holds a key lost the only way to remove it")
+
+        monkeypatch.setattr(licensing, "is_pro", lambda: False)
+        monkeypatch.setattr(entitlements, "ENFORCED", True)
+        tab._refresh_licence_status()
+        assert not tab._lic_group.isHidden(), (
+            "switching the tier on must bring the licence card back")
+    finally:
+        tab.hide()
+
+
+def test_the_example_script_does_not_name_a_paid_half():
+    """The screen-watching starter is seeded into every new library, so its
+    note is text every new user reads."""
+    import starters
+    import flow
+    g = starters.build_all()[starters.PRO_EXAMPLE]
+    texts = " ".join(str(n.data.get("text", "")) for n in g.nodes.values()
+                     if n.type == flow.N_FRAME)
+    assert texts, "the example has no note to check"
+    assert "Pro" not in texts

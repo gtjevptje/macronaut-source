@@ -58,6 +58,15 @@ import version as _v  # noqa: E402  (after sys.path setup)
 DIST = ROOT / "dist"
 EXE = DIST / "Macronaut.exe"
 MANIFEST = DIST / "update.json"
+
+
+def setup_exe(ver: str) -> Path:
+    """The installer asset for `ver`. ⚠ The name is `updater.SETUP_PREFIX` — the
+    updater decides from the filename alone whether it is holding an installer
+    or a portable build, so a release that spells it differently would be
+    downloaded and then swapped over the .exe as if it were one."""
+    import updater
+    return DIST / f"{updater.SETUP_PREFIX}{ver}.exe"
 VERSION_FILE = ROOT / "version.py"
 
 
@@ -114,6 +123,26 @@ def build() -> Path:
         raise SystemExit(f"error: expected {EXE} but it wasn't produced")
     print(f"  built {EXE} ({EXE.stat().st_size:,} bytes)")
     return EXE
+
+
+def build_installer(ver: str) -> Path:
+    """Build the folder build and wrap it in the Inno Setup installer.
+
+    ⚠ Second, never instead. The portable one-file .exe above is what every
+    copy published before 2.3.5 updates itself with, and those copies read the
+    manifest forever. This is the download the website leads with, because a
+    one-file build unpacks itself into a temp folder on every launch and that is
+    what antivirus heuristics react to — see tools/build_installer.py.
+    """
+    print("Building the installer…")
+    r = _run([sys.executable, "tools/build_installer.py"])
+    if r.returncode != 0:
+        raise SystemExit("error: the installer build failed")
+    out = setup_exe(ver)
+    if not out.exists():
+        raise SystemExit(f"error: expected {out} but it wasn't produced")
+    print(f"  built {out} ({out.stat().st_size:,} bytes)")
+    return out
 
 
 # ── Code signing ──────────────────────────────────────────────────────────────
@@ -235,6 +264,24 @@ def write_manifest(ver: str, notes: str = "") -> Path:
         "notes": notes,
         "published": time.strftime("%Y-%m-%d"),
     }
+    # ⚠ Added only when the installer was actually built, and read only by
+    # clients that are themselves folder builds. An older client ignores the
+    # key — `updater.parse_manifest` has ignored unknown keys since 2.0, which
+    # is the property that makes adding one safe at all (see the `mandatory`
+    # note in updater.py). Never make this block mandatory: the copies that
+    # would break are the ones that can only be fixed through this manifest.
+    setup = setup_exe(ver)
+    if setup.exists():
+        data["installer"] = {
+            "url": (f"https://github.com/{_v.UPDATE_REPO}/releases/download/"
+                    f"v{ver}/{setup.name}"),
+            "sha256": sha256(setup),
+            "size": setup.stat().st_size,
+        }
+    else:
+        print("  ⚠ no installer in dist/ — the manifest will offer the "
+              "portable build only. Build it with "
+              "`python tools/build_installer.py`.")
     MANIFEST.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     print(f"  wrote {MANIFEST}")
     print(f"    sha256 {data['sha256']}")
@@ -279,6 +326,21 @@ def publish(ver: str, notes: str = "") -> None:
         raise SystemExit(
             "error: dist/update.json's sha256 doesn't match dist/Macronaut.exe. "
             "The .exe changed after the manifest was written — rebuild.")
+    # The same guard for the installer, because it fails the same way and worse:
+    # a client that downloads it and finds the wrong hash refuses the update and
+    # says the download is corrupt, which is indistinguishable from a bad
+    # connection and will be reported as one.
+    block = json.loads(MANIFEST.read_text(encoding="utf-8")).get("installer")
+    setup = setup_exe(ver)
+    if block:
+        if not setup.exists():
+            raise SystemExit(
+                f"error: dist/update.json advertises an installer but {setup.name} "
+                "is not in dist/ — build it, or rewrite the manifest.")
+        if sha256(setup) != block.get("sha256"):
+            raise SystemExit(
+                f"error: dist/update.json's installer sha256 doesn't match "
+                f"{setup.name}. Rebuild.")
 
     # Say it out loud at the one moment it matters. An unsigned release makes
     # SmartScreen warn every new user, and that reputation resets with each
@@ -337,8 +399,9 @@ def publish(ver: str, notes: str = "") -> None:
               f"--notes-file {notes_file_for(ver).name}")
 
     tag = f"v{ver}"
+    setup_assets = [str(setup)] if setup.exists() else []
     r = _run(["gh", "release", "create", tag,
-              str(EXE), str(MANIFEST), *[str(p) for p in legal],
+              str(EXE), *setup_assets, str(MANIFEST), *[str(p) for p in legal],
               "--repo", _v.UPDATE_REPO,
               "--title", f"Macronaut {ver}",
               "--notes", notes or f"Macronaut {ver}"])
@@ -425,6 +488,9 @@ def main(argv: list) -> int:
     ap.add_argument("--sign", action="store_true",
                     help=f"Authenticode-sign the .exe (cert thumbprint in "
                          f"${SIGN_THUMBPRINT_ENV})")
+    ap.add_argument("--installer", action="store_true",
+                    help="also build the Inno Setup installer (dist/"
+                         "Macronaut-Setup-<ver>.exe)")
     ap.add_argument("--manifest", action="store_true",
                     help="write dist/update.json for the current build")
     ap.add_argument("--publish", action="store_true",
@@ -438,8 +504,9 @@ def main(argv: list) -> int:
         notes = Path(args.notes_file).read_text(encoding="utf-8")
 
     # Bare invocation = the common path: bump nothing, build, write manifest.
-    if not any((args.bump, args.build, args.manifest, args.publish)):
-        args.build = args.manifest = True
+    if not any((args.bump, args.build, args.installer, args.manifest,
+                args.publish)):
+        args.build = args.installer = args.manifest = True
 
     ver = _v.__version__
     # ⚠ Resolve the conventional notes file here too, not only in publish().
@@ -461,6 +528,8 @@ def main(argv: list) -> int:
 
     if args.build:
         build()
+    if args.installer:
+        build_installer(ver)
     # Signing rewrites the .exe, so it has to happen before the hash is taken.
     if args.sign:
         sign(EXE)

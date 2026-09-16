@@ -3730,7 +3730,11 @@ class SequenceTab(QWidget):
         # ⚠ Read at build time, so the label itself is left alone: it feeds
         # `_label_width`, and the palette's width machinery has already been the
         # cause of four separate clipped-label bugs. A tooltip cannot clip.
-        if _palette_entry_is_pro(emit) and not licensing.is_pro():
+        # ⚠ And never while the tier is off — Macronaut is presented as
+        # completely free (maintainer's decision, 16 September 2026), and a
+        # price in a tooltip is a mention of a paid version.
+        if (entitlements.ENFORCED and _palette_entry_is_pro(emit)
+                and not licensing.is_pro()):
             tip += f"\n\nPart of Macronaut Pro — {licensing_ui.PRICE}, once."
         b.setToolTip(tip)
         b.setMinimumHeight(34); b.setMinimumWidth(124)
@@ -4003,7 +4007,8 @@ class SequenceTab(QWidget):
         for b in getattr(self, "_palette_btns", []) or []:
             tip = b.toolTip().split("\n\n")[0]
             emit = getattr(b, "_ntype", "")
-            if emit and _palette_entry_is_pro(emit) and not licensing.is_pro():
+            if (emit and entitlements.ENFORCED and _palette_entry_is_pro(emit)
+                    and not licensing.is_pro()):
                 tip += f"\n\nPart of Macronaut Pro — {licensing_ui.PRICE}, once."
             b.setToolTip(tip)
 
@@ -4933,6 +4938,8 @@ class SettingsTab(QWidget):
         past the crash-reporting checkbox to find out.
         """
         gb, v = _card("Your licence")
+        # Kept so `_refresh_licence_status` can hide the whole card — see there.
+        self._lic_group = gb
 
         self._lic_status = QLabel("")
         self._lic_status.setObjectName("label_status")
@@ -4973,12 +4980,10 @@ class SettingsTab(QWidget):
             note = ("Thank you. Every feature is unlocked, on every computer "
                     "you own.")
         elif not entitlements.ENFORCED:
-            note = ("Every feature is unlocked right now, for everyone. There "
-                    "is no step limit and nothing is held back — you do not "
-                    "need a key.\n\nMacronaut will have a paid tier later "
-                    f"({licensing_ui.PRICE}, once) covering the steps that "
-                    "watch the screen and decide what to do. Anything you "
-                    "build now will keep working.")
+            # Never shown — the card is hidden in this state, below — but kept
+            # free of any paid wording in case something ever un-hides it.
+            note = ("Every feature is unlocked, for everyone. There is no step "
+                    "limit and nothing is held back.")
         else:
             note = ("Clicking, typing, dragging, scrolling and waiting are "
                     "free and always will be, in scripts of up to "
@@ -4997,6 +5002,16 @@ class SettingsTab(QWidget):
         # is off. Entering a key stays: founder keys exist and have to work.
         self._lic_buy.setVisible(not pro and entitlements.ENFORCED)
         self._lic_remove.setVisible(pro)
+        # ⚠⚠ The whole card goes while the tier is off and no key is entered
+        # (maintainer's decision, 16 September 2026: Macronaut is presented as
+        # completely free, and nothing may mention a paid version). A card
+        # titled "Your licence" with an "Enter a licence key" button is such a
+        # mention. Only one key has ever been issued, to the maintainer, so
+        # hiding the entry point strands nobody; a copy that already holds a
+        # key still sees its card, because removing it must stay possible.
+        group = getattr(self, "_lic_group", None)
+        if group is not None:
+            group.setVisible(pro or entitlements.ENFORCED)
 
     def _on_activate_licence(self):
         if licensing_ui.prompt_for_key(self):

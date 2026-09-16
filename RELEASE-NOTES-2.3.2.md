@@ -49,9 +49,7 @@ which a Click inside a Loop is not.
 
 ---
 
-Everything in 2.3.0 and 2.3.1 is unchanged. The whole Basic face is free
-permanently, and every Pro feature is still free for now, with nothing to enter
-and nothing to buy. Pro will be **€9.99 once**, later.
+Everything in 2.3.0 and 2.3.1 is unchanged, and all of it is free.
 
 Feedback and bug reports: **gerbenvanpoucke0@gmail.com**.
 

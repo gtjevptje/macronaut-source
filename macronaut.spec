@@ -2,6 +2,7 @@
 # PyInstaller spec for Macronaut
 # Build: pyinstaller macronaut.spec
 
+import os
 import sys
 from pathlib import Path
 
@@ -255,13 +256,26 @@ for _name in ("binaries", "datas"):
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
+# ── One file, or one folder ───────────────────────────────────────────────────
+# `MACRONAUT_ONEDIR=1` builds dist/Macronaut/ instead of dist/Macronaut.exe.
+#
+# ⚠ Why both exist. A one-file build unpacks itself into a fresh `_MEI…` temp
+# folder on every launch and runs from there, which is the single behaviour
+# Defender's heuristics react to most strongly — PyInstaller's own maintainers
+# name onedir-plus-an-installer as the fix in issue 6754. The one-file build is
+# still published, because every installed copy before 2.3.5 updates itself by
+# swapping exactly one file and would be left stranded by a folder.
+#
+# So: the *installer* ships the folder, and `Macronaut.exe` stays a portable
+# one-file download. Same code, two shapes, one spec.
+ONEDIR = bool(os.environ.get("MACRONAUT_ONEDIR"))
+
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
+    *([] if ONEDIR else [a.binaries, a.zipfiles, a.datas]),
     [],
+    exclude_binaries=ONEDIR,
     name="Macronaut",
     debug=False,
     bootloader_ignore_signals=False,
@@ -288,3 +302,19 @@ exe = EXE(
     version=str(_version_res),
     uac_admin=False,
 )
+
+
+if ONEDIR:
+    # The folder build. `dist/Macronaut/Macronaut.exe` beside its DLLs, which is
+    # what the Inno Setup installer packages — nothing unpacks itself at launch,
+    # so the `_MEI` temp-folder behaviour Defender reacts to never happens.
+    coll = COLLECT(
+        exe,
+        a.binaries,
+        a.zipfiles,
+        a.datas,
+        strip=False,
+        upx=False,
+        upx_exclude=[],
+        name="Macronaut",
+    )

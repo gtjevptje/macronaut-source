@@ -57,12 +57,10 @@ Two smaller things while it was open:
 
 ---
 
-## Everything is still free
+## Everything is free
 
-Pro will be **€9.99 once**, later. Nothing is enforced in this build: every
-feature — including the ones that watch the screen and branch on what they find
-— is available to everyone right now, there is no key to enter and nothing to
-buy. Anything you build now keeps working when that changes.
+Every feature — including the ones that watch the screen and branch on what
+they find — is available to everyone, with nothing to enter and no account.
 
 Feedback, bug reports and questions: **gerbenvanpoucke0@gmail.com**. It is one
 person, not a ticket queue.

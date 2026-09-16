@@ -23,9 +23,7 @@ on screen.
 
 ---
 
-Everything in 2.3.0 is unchanged and still free — the whole Basic face
-permanently, and every Pro feature for now, with nothing to enter and nothing to
-buy. Pro will be **€9.99 once**, later.
+Everything in 2.3.0 is unchanged, and all of it is free.
 
 Feedback and bug reports: **gerbenvanpoucke0@gmail.com**.
 

@@ -1,6 +1,8 @@
 # Macronaut
 
-**A free, open-source auto clicker and visual macro recorder for Windows.**
+**An auto clicker that watches the screen and decides what to do.**
+Free and open source, for Windows. Wait for something to appear, click it where
+it actually is, and keep going when it doesn't — without writing code.
 
 [![tests](https://github.com/gtjevptje/macronaut-source/actions/workflows/tests.yml/badge.svg)](https://github.com/gtjevptje/macronaut-source/actions/workflows/tests.yml)
 [![Licence: GPL v3](https://img.shields.io/badge/licence-GPL--3.0--or--later-4f46e5)](LICENSE)
@@ -14,15 +16,6 @@
 
 <p align="center"><em>Every step is a box. Drag a port onto another box to wire
 them together — that is the whole language.</em></p>
-
-A Windows autoclicker and input-automation app built with Python and PySide6 (Qt 6).
-The **Advanced** face is the centrepiece — a node canvas for recording and
-hand-crafting multi-step scripts — backed by a classic single-point
-**Basic** auto-clicker.
-
-A modern dark **indigo** theme (with an instant light mode), the Windows system
-typeface, consistent controls throughout, plain-language descriptions on the
-advanced features, and a layout that adapts from a small window to fullscreen.
 
 ## Download
 
@@ -39,13 +32,39 @@ and [TinyTask](https://gtjevptje.github.io/Macronaut/tinytask-alternative.html).
 ⚠ **Windows will warn you the first time.** A blue "Windows protected your PC"
 box appears — click **More info** → **Run anyway**. That warning is not about
 anything found in the file; it is what Windows shows for any executable without
-a paid code-signing certificate, which this project does not have yet. Being
+a code-signing certificate, which this project does not have yet. Being
 able to read the source instead is the honest answer to it, and that is what
 this repository is. Your antivirus may flag it for the same reason, plus one
 more: it installs a global keyboard hook, because a stop hotkey that only works
 when the window is focused would be useless.
 
 To run from source instead, see [Installation](#installation) below.
+
+---
+
+## What it does that a plain auto clicker cannot
+
+**It waits for something, then clicks where that thing actually is.** Point it
+at a button, a dialog or an icon, and it searches the screen until that appears
+— at a different DPI or window size too — then clicks it where it found it, not
+at a coordinate that was right yesterday. Text works the same way, read with
+Windows' own OCR, and so does a single pixel changing colour.
+
+**It decides.** Every detection has a *found* branch and a *not found* branch,
+so a script can handle the dialog that never appeared instead of hammering the
+spot where it should have been. Loops, jumps and variables go with it.
+
+**Keyboard and mouse in one script.** Clicks, keystrokes, chords, drags, scroll
+flicks and held keys in whatever order you need — hold **W** to keep moving
+while the mouse clicks. Anything held is released when the run ends, stops or
+crashes.
+
+**It reaches programs that ignore ordinary input.** Three selectable input
+backends: standard, SendInput scancodes, and the **Interception** kernel driver.
+Many games discard injected input; the lower two look like a real keyboard.
+
+**And it is all free.** No account, no advertising, no trial and no limit on
+what a script can do.
 
 ---
 
@@ -143,7 +162,7 @@ checkable is the source, all of which is in this repository.
 
 The commit history starts on the day the project went open source rather than
 on the day it began. The private working repository also holds the business
-around the program — outreach drafts, traffic numbers, pricing plans — none of
+around the program — outreach drafts and traffic numbers — none of
 which is part of Macronaut, and rewriting three years of history to strip it was
 a worse risk than simply starting here. Nothing about the *program* is withheld.
 
@@ -279,9 +298,3 @@ Many online games and services forbid automation in their terms of service, and
 using it against them can cost you your account. That is your call to make —
 read their rules first.
 
-### Pro is free right now
-
-The Pro features — watching the screen, and branching on what it sees — are
-built, and they are switched on for everyone. There is no key, no limit and
-nothing to buy. See `entitlements.py`, which is where that decision lives and
-explains itself.

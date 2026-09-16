@@ -214,7 +214,7 @@ def _pro_example() -> flow.FlowGraph:
         "Example — watching the screen",
         "Clicking and typing happen on a timer. Steps that look at the screen "
         "and decide what to do — here Wait for text, and the Loop around it — "
-        "are the Macronaut Pro half.",
+        "are what make Macronaut more than a clicker.",
         "",
         "This one watches for the word “Done” for two minutes and stops when "
         "it sees it. It only looks; it clicks nothing. Double-click it to "

@@ -1,15 +1,7 @@
-Two things that never worked, a library that is no longer empty, and the
-groundwork for a paid tier that is not switched on.
+Two things that never worked, and a library that is no longer empty.
 
-**Every feature is still free.** Macronaut now contains the machinery for a Pro
-tier — you will see a "Your licence" card in Settings — and none of it is
-switched on. Nothing you can do today stops working, nothing is watermarked,
-nothing expires, and you do not need a key.
-
-Pro will be €9.99 once, later, covering the steps that watch the screen and
-decide what to do. It stays off until enough people are using Macronaut for
-that to be worth doing. When it changes it will be said plainly and in
-advance, and anything you have already built will keep working.
+**Every feature is free.** Nothing is watermarked, nothing expires, and there
+is no account.
 
 **"Select region on screen…" works.** In Settings, under *Keep clicks inside a
 region*, it did nothing at all — the overlay was collected by Python the

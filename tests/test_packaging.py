@@ -269,9 +269,21 @@ def test_the_scoop_and_winget_manifests_describe_the_same_download():
 
     pattern = os.path.join(ROOT, "packaging", "winget", "**", "*.installer.yaml")
     wingets = sorted(glob.glob(pattern, recursive=True))
-    assert len(wingets) == 1, (
-        "expected one winget installer manifest, got %d" % len(wingets))
-    with open(wingets[0], encoding="utf-8") as fh:
+    assert wingets, "there is no winget installer manifest at all"
+
+    # ⚠ The NEWEST one, not the only one. winget-pkgs keeps every version that
+    # was ever submitted, so this directory grows by one per release and the
+    # older manifests are a record of what was published rather than drafts to
+    # keep current. Comparing Scoop against all of them would fail the day a
+    # second version exists; comparing it against the newest keeps the thing
+    # this test is actually for — the two files that describe the *next*
+    # submission must not disagree.
+    def _version_of(path):
+        name = os.path.basename(os.path.dirname(path))
+        return tuple(int(p) if p.isdigit() else -1 for p in name.split("."))
+
+    newest = max(wingets, key=_version_of)
+    with open(newest, encoding="utf-8") as fh:
         w = fh.read()
 
     def field(name):

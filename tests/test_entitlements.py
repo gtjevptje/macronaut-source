@@ -341,8 +341,16 @@ def test_the_app_and_the_site_quote_one_price_and_one_limit(name):
     if not built.exists():
         pytest.skip(f"{name} not built in this checkout")
     text = built.read_text(encoding="utf-8")
-    assert entitlements.PRICE in text
-    assert str(entitlements.FREE_MAX_STEPS) in text
+    # ⚠ Both directions, from the SHIPPED switch. Since 16 September 2026 a
+    # page built with the tier off names no price and no limit at all — the
+    # maintainer's rule is that Macronaut is presented as completely free. The
+    # day the switch flips, the one price and the one limit must both be back.
+    if _shipped_enforced():
+        assert entitlements.PRICE in text
+        assert str(entitlements.FREE_MAX_STEPS) in text
+    else:
+        assert entitlements.PRICE not in text, (
+            f"{name} quotes a price while Macronaut is presented as free")
 
 
 @needs_site
@@ -566,9 +574,24 @@ def test_the_smartscreen_warning_reaches_the_person_downloading():
     forbid. The first draft of this test did exactly that.
     """
     root = Path(__file__).resolve().parent.parent
-    for name, marker, first_section in (
-            ("index.html", 'class="under heads-up"', "<section"),
-            ("README.md", "on first run", "## What it is")):
+
+    # ⚠ The README's fold is "before the first heading", not the name of a
+    # particular heading. This pinned the literal string "## What it is" until
+    # 16 September 2026, when rewriting the README as a landing page renamed
+    # that section — and the test then failed with `ValueError: substring not
+    # found`, which says nothing about SmartScreen and reads as a broken test
+    # rather than as the rule it is defending. A test that breaks on a rename
+    # gets edited to match the rename, which is one edit away from being
+    # deleted.
+    def _first_heading(text):
+        import re
+        m = re.search(r"^## ", text, re.MULTILINE)
+        assert m, "the README has no sections at all any more"
+        return m.start()
+
+    for name, marker, fold in (
+            ("index.html", 'class="under heads-up"', lambda t: t.index("<section")),
+            ("README.md", "on first run", _first_heading)):
         built = root / "site" / name
         if not built.exists():
             pytest.skip(f"{name} not built in this checkout")
@@ -578,7 +601,7 @@ def test_the_smartscreen_warning_reaches_the_person_downloading():
         assert "Run anyway" in text[text.index(marker):
                                     text.index(marker) + 400], (
             f"{name}: the heads-up no longer says what to click")
-        assert text.index(marker) < text.index(first_section), (
+        assert text.index(marker) < fold(text), (
             f"{name}: the SmartScreen instruction has drifted below the fold, "
             "where the people who need it have already left")
 
@@ -1380,15 +1403,21 @@ def test_the_faq_does_not_describe_limits_that_are_switched_off():
     try:
         bs.entitlements.ENFORCED = False
         off = faq_blob()
-        assert "That cap is not switched on yet" in off, (
-            "the FAQ states the free-tier step cap as current fact while "
-            "ENFORCED is False")
-        assert "Nothing is gated today" in off, (
+        # ⚠ Since 16 September 2026 the rule is stronger than "annotate the
+        # cap": while the tier is off, the FAQ says nothing about a cap, a Pro
+        # step or a price at all (see FREE_MODE_FAQ).
+        assert "Is it really free?" in off
+        assert f"scripts of up to {bs.entitlements.FREE_MAX_STEPS} steps" not in off, (
+            "the FAQ describes a free-tier step cap while ENFORCED is False")
+        assert "will not run until it is licensed" not in off, (
             "the FAQ says Pro steps will not run while ENFORCED is False and "
             "every one of them runs")
+        assert "Pro adds" not in off
 
         bs.entitlements.ENFORCED = True
         on = faq_blob()
+        assert f"scripts of up to {bs.entitlements.FREE_MAX_STEPS} steps" in on
+        assert "will not run until it is licensed" in on
         assert "That cap is not switched on yet" not in on, (
             "the 'not yet' note survived into an enforced build, where it "
             "tells a paying customer the cap they are paying to lift is not real")
@@ -1583,3 +1612,143 @@ def test_a_healthy_build_does_not_trip_the_size_gate():
             "guess, which would block every publish")
     finally:
         bs._MANIFEST_CACHE.clear()
+
+
+@needs_site
+def test_the_readme_blocks_follow_the_switch_in_both_directions(monkeypatch):
+    """⚠⚠ The README's pricing copy is generated from `ENFORCED`, both ways.
+
+    It used to be a hand-written Free/Pro table that never consulted the
+    switch, with a dash beside "Wait for an image, then click it" in the Free
+    column — on the page search engines actually rank, on a build that gates
+    nothing. Since 16 September 2026 the maintainer's rule is stricter still:
+    while the tier is off, nothing paid is mentioned at all, so every one of
+    these tokens is empty and the section around them is dropped by markers.
+
+    Both directions are pinned. A test that only checked today's state would
+    pass against a block hardcoded to it.
+    """
+    bs = _build_site_module()
+
+    monkeypatch.setattr(bs.entitlements, "ENFORCED", False)
+    off = bs._readme_blocks()
+    assert off == {"FREE_NOW_NOTE": "", "PRO_TAG": "", "README_PRICING": ""}, (
+        "the README still carries paid-tier copy while the tier is off")
+
+    monkeypatch.setattr(bs.entitlements, "ENFORCED", True)
+    on = bs._readme_blocks()
+    assert on["PRO_TAG"] == " *(Pro)*"
+    gated = on["README_PRICING"].split("| Wait for an image")[1].split("\n")[0]
+    assert gated.split("|")[1].strip() == "—", (
+        "switching the tier on must bring the gated column back")
+    assert bs.entitlements.PRICE in on["README_PRICING"]
+    assert str(bs.entitlements.FREE_MAX_STEPS) in on["README_PRICING"]
+
+
+# ── "Macronaut is completely free" — the maintainer's rule, 16 September 2026 ──
+#
+# Nothing a visitor reads may mention a paid version while `ENFORCED` is False:
+# no price, no "Pro", no "buy", no "for now". The paid copy is still in the
+# templates, inside <!--PAID--> markers, and returns by itself the day the
+# switch flips — which is why these tests read the SHIPPED value with `ast`
+# rather than the attribute the autouse fixture above has patched to True.
+#
+# ⚠ They scan what is BUILT, not the templates: the templates are full of paid
+# copy on purpose. And they scan what a person or a search engine reads — the
+# visible text and the JSON-LD — but not the <style> block, where class names
+# like `.plan` are not a mention to anybody.
+
+_PAID_WORDS = re.compile(
+    r"\bpro\b|€|\bbuy\b|\bpaid\b|\bpurchas|licen[cs]e key|\bupgrade\b|"
+    r"checkout|subscription|refund|\bpricing\b|\bpremium\b",
+    re.IGNORECASE)
+
+
+def _shipped_enforced() -> bool:
+    import ast
+    src = (Path(__file__).resolve().parent.parent / "entitlements.py"
+           ).read_text(encoding="utf-8")
+    shipped = [n.value.value
+               for n in ast.walk(ast.parse(src))
+               if isinstance(n, ast.Assign)
+               and any(getattr(t, "id", None) == "ENFORCED" for t in n.targets)
+               and isinstance(n.value, ast.Constant)]
+    return shipped == [True]
+
+
+def _paid_mentions(text: str) -> list:
+    text = re.sub(r"<style.*?</style>", "", text, flags=re.S)
+    out = []
+    for m in _PAID_WORDS.finditer(text):
+        around = re.sub(r"<[^>]+>", "",
+                        text[max(0, m.start() - 50):m.end() + 50])
+        out.append(" ".join(around.split()))
+    return out
+
+
+@needs_site
+def test_no_published_page_mentions_a_paid_version():
+    """Every built page, both READMEs and the domain-root page."""
+    if _shipped_enforced():
+        pytest.skip("the paid tier is switched on; mentioning it is the point")
+    root = Path(__file__).resolve().parent.parent
+    names = [n for _s, n, _p, _f in _build_site_module().PAGES]
+    targets = ([root / "site" / n for n in names]
+               + [root / "site" / "README.md", root / "README.md",
+                  root / "site" / "root" / "index.html"])
+    found = {}
+    for path in targets:
+        if not path.exists():
+            continue
+        hits = _paid_mentions(path.read_text(encoding="utf-8"))
+        if hits:
+            found[str(path.relative_to(root))] = hits[:3]
+    assert not found, (
+        "Macronaut is presented as completely free, and these still mention a "
+        f"paid version: {found}")
+
+
+@needs_site
+def test_the_markers_drop_paid_copy_and_keep_it_for_later(monkeypatch):
+    """The mechanism itself, both ways, including the whitespace trap.
+
+    ⚠ The first version ate the space after an inline block and would have
+    published "identifierand nothing" on the privacy page.
+    """
+    bs = _build_site_module()
+    text = ("identifier<!--PAID-->, no licence key<!--/PAID--> and nothing\n"
+            "  <!--PAID-->\n  <h2>Paid licences</h2>\n  <!--/PAID-->\n"
+            "after\n"
+            "    <!--PAID--><a>See what Pro adds</a><!--/PAID-->\n"
+            "    <!--FREE--><a>See what it can do</a><!--/FREE-->\n")
+
+    monkeypatch.setattr(bs.entitlements, "ENFORCED", False)
+    off = bs.paid_markers(text)
+    assert off == ("identifier and nothing\nafter\n"
+                   "    <a>See what it can do</a>\n")
+
+    monkeypatch.setattr(bs.entitlements, "ENFORCED", True)
+    on = bs.paid_markers(text)
+    assert "no licence key and nothing" in on
+    assert "<h2>Paid licences</h2>" in on
+    assert "See what Pro adds" in on and "See what it can do" not in on
+    assert "<!--" not in on and "<!--" not in off, "a marker reached the page"
+
+
+@needs_site
+def test_an_unbalanced_marker_refuses_to_build(monkeypatch):
+    bs = _build_site_module()
+    monkeypatch.setattr(bs.entitlements, "ENFORCED", False)
+    with pytest.raises(SystemExit):
+        bs.paid_markers("<!--PAID-->the price, never closed")
+
+
+@needs_site
+def test_the_free_faq_names_only_questions_that_exist():
+    """⚠ FREE_MODE_FAQ is keyed by question text. Reword a question in FAQ
+    and the filter would silently stop matching it, publishing its paid
+    wording — so a stale key must fail the build, not be ignored."""
+    bs = _build_site_module()
+    questions = {q for q, _a in bs.FAQ}
+    assert set(bs.FREE_MODE_FAQ) <= questions, (
+        set(bs.FREE_MODE_FAQ) - questions)

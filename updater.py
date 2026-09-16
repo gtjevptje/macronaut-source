@@ -58,7 +58,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -69,6 +69,12 @@ NETWORK_TIMEOUT = 15  # seconds, per request
 
 # The flag the newly downloaded .exe is relaunched with to perform the swap.
 APPLY_FLAG = "--apply-update"
+
+# The published name of the installer asset, and the one thing that tells `apply`
+# which of the two update shapes it is holding. This module produces the name
+# (`UpdateInfo.filename`) and consumes it, so the two cannot drift; `release.py`
+# is pinned to the same spelling by a test.
+SETUP_PREFIX = "Macronaut-Setup-"
 
 # How long the swapping process waits for the old one to exit before giving up.
 _EXIT_WAIT_SECONDS = 30
@@ -109,9 +115,42 @@ class UpdateInfo:
     # manifest shape, about an hour, none of the above.
     published: str = ""
 
+    # ── The installer half of the same release (2.3.5 and later) ─────────────
+    # ⚠ Optional, and every one of the manifests already published lacks it, so
+    # nothing may depend on it being there. A release publishes two artefacts:
+    # the portable one-file `Macronaut.exe` these fields do NOT describe, and a
+    # folder build wrapped in an Inno Setup installer, which is what a copy
+    # installed from that installer has to update with. A folder cannot be
+    # swapped into a single .exe, so the shape of the running build decides —
+    # see `best_for_this_install`.
+    installer_url: str = ""
+    installer_sha256: str = ""
+    installer_size: int = 0
+    kind: str = "exe"          # "exe" (portable, swapped) or "installer" (run)
+
     @property
     def filename(self) -> str:
+        if self.kind == "installer":
+            return f"{SETUP_PREFIX}{self.version}.exe"
         return f"Macronaut-{self.version}.exe"
+
+    def as_installer(self) -> "UpdateInfo":
+        """The same release, described by its installer asset. Raises if absent."""
+        if not self.installer_url:
+            raise UpdateError("This release publishes no installer.")
+        return replace(self, url=self.installer_url, sha256=self.installer_sha256,
+                       size=self.installer_size, kind="installer")
+
+    def best_for_this_install(self) -> "UpdateInfo":
+        """Whichever asset THIS copy of Macronaut can actually apply.
+
+        ⚠ The portable build is the default and stays the default: it is what
+        every copy published before 2.3.5 knows how to install, and those copies
+        read this manifest forever.
+        """
+        if self.installer_url and is_folder_build():
+            return self.as_installer()
+        return self
 
 
 class UpdateError(RuntimeError):
@@ -135,6 +174,38 @@ def is_frozen() -> bool:
     """True when running as the PyInstaller .exe. Updating is only meaningful
     there — from source, `git pull` is the update mechanism."""
     return bool(getattr(sys, "frozen", False))
+
+
+def is_folder_build() -> bool:
+    """True when this is the FOLDER build — the one the installer ships.
+
+    ⚠ How the two are told apart, and why it is this and not a registry lookup:
+    PyInstaller sets `sys._MEIPASS` to wherever the bundle was unpacked. In a
+    one-file build that is a fresh `_MEI…` directory under %TEMP%, far away from
+    the .exe; in a folder build nothing is unpacked, so it is **inside the .exe's
+    own directory**. That is a property of the running process rather than of
+    what some installer wrote down, so it stays true for a folder somebody
+    copied to a USB stick and cannot be made wrong by a half-finished uninstall.
+
+    ⚠ "Inside", not "equal to", and the difference is a real build: PyInstaller
+    6 puts the bundle in a `_internal` subdirectory rather than beside the .exe.
+    The first version of this function compared the two for equality and
+    answered False for every folder build there is — which fails *safe* (the
+    portable asset still installs over a portable copy) and would therefore have
+    gone unnoticed. The frozen build's own self-test prints the bundle path:
+    `bundle=…/dist/Macronaut/_internal`.
+    """
+    if not is_frozen():
+        return False
+    meipass = getattr(sys, "_MEIPASS", None)
+    if not meipass:
+        return False
+    try:
+        bundle = Path(meipass).resolve()
+        here = Path(sys.executable).resolve().parent
+        return bundle == here or here in bundle.parents
+    except OSError:
+        return False
 
 
 def current_exe() -> Optional[Path]:
@@ -313,11 +384,40 @@ def parse_manifest(data: dict) -> UpdateInfo:
         size = int(data.get("size", 0) or 0)
     except (TypeError, ValueError):
         size = 0
+    inst_url, inst_sha, inst_size = _parse_installer(data.get("installer"))
     return UpdateInfo(
         version=ver, url=url, sha256=sha, size=size,
         notes=str(data.get("notes", "") or ""),
         published=str(data.get("published", "") or ""),
+        installer_url=inst_url, installer_sha256=inst_sha,
+        installer_size=inst_size,
     )
+
+
+def _parse_installer(block) -> tuple:
+    """-> (url, sha256, size), or ("", "", 0) when there is no usable installer.
+
+    ⚠ A malformed block is IGNORED rather than fatal, and that is the whole
+    design of this function. The portable asset beside it is always valid, so
+    refusing the entire manifest over an optional extra would turn a typo in one
+    release into "no updates at all" for every installed copy — including the
+    copies that would have to be updated to fix it. A tampered block cannot buy
+    anything either: whatever it names is still verified against the sha256 the
+    same block carries, and against the signature check, before anything runs.
+    """
+    if not isinstance(block, dict):
+        return "", "", 0
+    url = str(block.get("url", "") or "").strip()
+    sha = str(block.get("sha256", "") or "").strip().lower()
+    if not url.lower().startswith("https://"):
+        return "", "", 0
+    if len(sha) != 64 or any(c not in "0123456789abcdef" for c in sha):
+        return "", "", 0
+    try:
+        size = int(block.get("size", 0) or 0)
+    except (TypeError, ValueError):
+        size = 0
+    return url, sha, size
 
 
 def check(current: str = version.__version__,
@@ -484,6 +584,13 @@ def download(info: UpdateInfo,
     polled so a UI can abort a slow download. A failed or cancelled download
     leaves nothing behind.
     """
+    # ⚠ Chosen here rather than by the caller. Every caller today hands over
+    # whatever `check()` returned, and the question "which asset can this copy
+    # actually install" is answered by the running build, not by the UI. Doing
+    # it here also means the progress total, the verified hash and the staged
+    # filename all describe the same file.
+    info = info.best_for_this_install()
+
     dest_dir = dest_dir or updates_dir()
     try:
         dest_dir.mkdir(parents=True, exist_ok=True)
@@ -550,14 +657,17 @@ def apply(staged: Path, target: Optional[Path] = None, relaunch: bool = True) ->
     The caller must quit promptly afterwards: the new process is already waiting
     for this PID to disappear before it can replace the file.
     """
-    target = target or current_exe()
-    if target is None:
-        raise UpdateError(
-            "Running from source — update by pulling the repository instead.")
     if not staged.exists():
         raise UpdateError("The downloaded update is missing.")
     if not verify_signature(staged):
         raise UpdateError("The downloaded update is not correctly signed.")
+    if staged.name.startswith(SETUP_PREFIX):
+        return _apply_installer(staged, relaunch=relaunch)
+
+    target = target or current_exe()
+    if target is None:
+        raise UpdateError(
+            "Running from source — update by pulling the repository instead.")
     if not os.access(target.parent, os.W_OK):
         raise UpdateError(
             f"No write access to {target.parent} — run Macronaut as "
@@ -576,6 +686,39 @@ def apply(staged: Path, target: Optional[Path] = None, relaunch: bool = True) ->
         subprocess.Popen(args, close_fds=True, creationflags=flags)
     except OSError as e:
         raise UpdateError(f"Could not start the updater ({e}).") from e
+
+
+def _apply_installer(staged: Path, relaunch: bool = True) -> None:
+    """Run the downloaded Inno Setup installer over this installation.
+
+    The caller quits immediately afterwards, exactly as for the .exe swap — but
+    for a different reason. The swap needs this process gone before it can
+    rename the file; Setup can close the app itself (`CloseApplications=yes`),
+    and quitting first simply means the user is not looking at a window that is
+    about to be replaced underneath them.
+
+    ⚠ `/SILENT`, not `/VERYSILENT`. The user pressed Install and is watching; a
+    progress window is the only thing on screen that says the update is
+    happening. `/VERYSILENT` is for an unattended machine, which this is not.
+
+    ⚠ No `--target`: Setup knows where it installed from its own AppId, so a
+    copy the user moved or renamed still upgrades in place instead of landing a
+    second installation beside it.
+    """
+    args = [str(staged), "/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART",
+            "/CLOSEAPPLICATIONS"]
+    if relaunch:
+        # Setup restarts what it closed. Without this the update finishes and
+        # the user is left staring at an empty desktop wondering whether it
+        # worked — which is also how the .exe swap behaves without --relaunch.
+        args.append("/RESTARTAPPLICATIONS")
+    flags = 0
+    if os.name == "nt":  # survive the parent's exit
+        flags = getattr(subprocess, "DETACHED_PROCESS", 0) |                 getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    try:
+        subprocess.Popen(args, close_fds=True, creationflags=flags)
+    except OSError as e:
+        raise UpdateError(f"Could not start the installer ({e}).") from e
 
 
 def _wait_for_exit(pid: int, timeout: float = _EXIT_WAIT_SECONDS) -> bool:

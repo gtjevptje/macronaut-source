@@ -311,7 +311,32 @@ def test_the_page_counts_the_starters_the_app_actually_ships(name):
     if not built.exists():
         pytest.skip(f"{name} not built in this checkout")
     text = built.read_text(encoding="utf-8")
-    assert f"{len(starters.free_starters())} automations already built" in text
+
+    # ⚠ The NUMBER is the subject, not the sentence around it. This pinned the
+    # exact phrase "N automations already built" until 16 September 2026, when
+    # rewriting the README as a landing page moved that promise into a numbered
+    # list and reworded it — and the test then failed for a page that was
+    # entirely correct. A test that breaks on a rewrite teaches people to edit
+    # the test, which is one step away from deleting it.
+    import re
+
+    def _counts(n):
+        """Is `n` named right next to the word it is counting?"""
+        return re.search(r"\b%d\b[^.\n]{0,80}\b(scripts?|automations?)\b" % n,
+                         text, re.I)
+
+    free = len(starters.free_starters())
+    assert _counts(free), (
+        f"{name} no longer tells a visitor how many ready-made scripts they "
+        f"get ({free})")
+
+    # And the Pro-inclusive figure must not be the one on the page — that is
+    # the lie this test was written for: a number one larger than what someone
+    # can actually run after downloading.
+    everything = len(starters.STARTERS)
+    if everything != free:
+        assert not _counts(everything), (
+            f"{name} counts the Pro example among what a new user can run")
 
 
 def test_the_app_seeds_on_startup():

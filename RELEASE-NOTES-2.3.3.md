@@ -56,13 +56,6 @@ sell it back.
 GPL rather than a permissive licence for exactly that reason. It is not a
 restriction on you; it is what keeps the next person's copy as free as yours.
 
-## Pro is still free
-
-Unchanged from 2.2.0 onwards, and worth repeating because "open source" and
-"there is a paid tier" arrive in the same release note. Every feature —
-including everything marked Pro — is switched on for everyone right now. There
-is no key, no limit and nothing to buy. Anything you build now keeps working.
-
 ## Notes
 
 - Builds published before 30 August 2026 remain under the licence they shipped

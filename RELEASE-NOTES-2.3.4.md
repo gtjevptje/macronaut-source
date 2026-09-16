@@ -37,9 +37,6 @@ Macronaut now writes the new version alongside the old one and swaps them in a
 single step. If anything goes wrong, the flow you already had is exactly where
 it was.
 
-**Activating a licence is written the same way**, for the same reason. An
-interrupted write there used to leave a paid copy quietly back on the free tier.
-
 **And so is settings.json**, which is the one most people would actually have
 noticed. If that file was locked while Macronaut saved it — antivirus scanning,
 a sync client, an editor left open — it was emptied, and the next launch quietly
