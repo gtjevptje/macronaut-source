@@ -1,16 +1,16 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.12.0.schema.json
 
-PackageIdentifier: GerbenvanPoucke.Macronaut
+PackageIdentifier: Macronaut.Macronaut
 PackageVersion: 2.3.4
 PackageLocale: en-US
-Publisher: Gerben van Poucke
+Publisher: Macronaut
 PublisherUrl: https://github.com/gtjevptje
 PublisherSupportUrl: https://github.com/gtjevptje/macronaut-source/issues
 PackageName: Macronaut
 PackageUrl: https://gtjevptje.github.io/Macronaut/
 License: GPL-3.0-or-later
 LicenseUrl: https://github.com/gtjevptje/macronaut-source/blob/main/LICENSE
-Copyright: Copyright (c) 2026 Gerben van Poucke
+Copyright: Copyright (c) 2026 Macronaut
 CopyrightUrl: https://github.com/gtjevptje/macronaut-source/blob/main/LICENSE
 ShortDescription: A free auto clicker and visual macro recorder for Windows.
 Description: |-
@@ -23,7 +23,7 @@ Description: |-
   JSON files you can read, back up and share.
 
   Macronaut runs entirely on your machine. There is no account and no usage
-  tracking, and a Pro licence is verified offline. It checks for updates, and it
+  tracking. It checks for updates, and it
   can send a crash report -- but only if you agree when it asks, and never your
   scripts, your keystrokes or anything on screen.
 

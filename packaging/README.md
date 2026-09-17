@@ -20,14 +20,14 @@ re-doing on every version bump rather than trusting the local `dist/`.
 
 Three files in the layout `microsoft/winget-pkgs` expects:
 
-    manifests/g/GerbenvanPoucke/Macronaut/2.3.3/
-      GerbenvanPoucke.Macronaut.yaml               (version)
-      GerbenvanPoucke.Macronaut.locale.en-US.yaml  (defaultLocale)
-      GerbenvanPoucke.Macronaut.installer.yaml     (installer)
+    manifests/m/Macronaut/Macronaut/2.3.4/
+      Macronaut.Macronaut.yaml               (version)
+      Macronaut.Macronaut.locale.en-US.yaml  (defaultLocale)
+      Macronaut.Macronaut.installer.yaml     (installer)
 
 Verified with the real client, `winget v1.29.290`:
 
-    winget validate --manifest packaging/winget/manifests/g/GerbenvanPoucke/Macronaut/2.3.3
+    winget validate --manifest packaging/winget/manifests/m/Macronaut/Macronaut/2.3.4
     Manifest validation succeeded.
 
 `InstallerType: portable` is the one that fits: Macronaut is a single .exe with
@@ -121,7 +121,8 @@ opening the PR:
   nothing is being disclosed — the question is only whether to create the
   record. **This is the maintainer's call, not something to do in passing.**
 
-`PackageIdentifier` is `GerbenvanPoucke.Macronaut`. No `g/GerbenvanPoucke`
+`PackageIdentifier` is `Macronaut.Macronaut` (publisher "Macronaut", so the
+personal name stays out of the command people type). No `m/Macronaut`
 publisher folder exists upstream yet and no package matches "Macronaut", so the
 name is free. It is permanent once merged — a rename means a new package.
 
@@ -148,5 +149,5 @@ No `persist` block, deliberately: Macronaut keeps scripts and settings in
 Both files pin version 2.3.3, the URL and the SHA-256. On the next release:
 
 - **Scoop** updates itself via Excavator — nothing to do.
-- **winget** needs a new version folder. `wingetcreate update GerbenvanPoucke.Macronaut`
+- **winget** needs a new version folder. `wingetcreate update Macronaut.Macronaut`
   does it in one command once the package exists upstream.

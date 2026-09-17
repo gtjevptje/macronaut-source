@@ -504,8 +504,12 @@ def main(argv: list) -> int:
         notes = Path(args.notes_file).read_text(encoding="utf-8")
 
     # Bare invocation = the common path: bump nothing, build, write manifest.
-    if not any((args.bump, args.build, args.installer, args.manifest,
-                args.publish)):
+    # ⚠ `--installer` is an ADDITION ("also build"), so it does not count as
+    # having chosen steps. It used to: `--bump patch --installer` re-executes
+    # as a bare `--installer`, which then built the installer and nothing else,
+    # leaving the previous release's .exe and update.json in dist/ beside a
+    # freshly bumped version.py (17 September 2026, cutting 2.3.5).
+    if not any((args.bump, args.build, args.manifest, args.publish)):
         args.build = args.installer = args.manifest = True
 
     ver = _v.__version__

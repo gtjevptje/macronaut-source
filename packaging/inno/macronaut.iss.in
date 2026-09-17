@@ -15,7 +15,7 @@
 
 #define AppName "Macronaut"
 #define AppVersion "{{VERSION}}"
-#define AppPublisher "Gerben van Poucke"
+#define AppPublisher "Macronaut"
 #define AppURL "https://gtjevptje.github.io/Macronaut/"
 #define AppExe "Macronaut.exe"
 

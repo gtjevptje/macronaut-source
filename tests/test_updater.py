@@ -562,6 +562,23 @@ def test_signing_happens_before_the_manifest_is_written(tmp_path, monkeypatch):
     assert calls == ["build", "sign", "manifest"]
 
 
+@pytest.mark.parametrize("argv", [[], ["--installer"]])
+def test_asking_for_the_installer_still_builds_the_whole_release(argv, monkeypatch):
+    """`--installer` means "also". `--bump patch --installer` re-executes as a
+    bare `--installer`, and that once built the installer alone, leaving the
+    previous .exe and manifest in dist/ under a bumped version."""
+    import release
+
+    calls = []
+    monkeypatch.setattr(release, "build", lambda: calls.append("build"))
+    monkeypatch.setattr(release, "build_installer",
+                        lambda ver: calls.append("installer"))
+    monkeypatch.setattr(release, "write_manifest",
+                        lambda *a, **k: calls.append("manifest"))
+    release.main(argv)
+    assert calls == ["build", "installer", "manifest"]
+
+
 def test_sign_refuses_without_a_certificate_thumbprint(monkeypatch, tmp_path):
     # No thumbprint must stop the release, not silently publish unsigned.
     import release

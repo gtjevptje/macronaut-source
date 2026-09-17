@@ -337,6 +337,15 @@ def test_the_app_id_is_pinned():
     assert "{{2C3F7A48-9E31-4B6D-9C57-5A0E1D4F8B22}" in text
 
 
+def test_the_installer_is_published_under_the_product_name():
+    """The maintainer's decision (17 September 2026): the installer shows
+    "Macronaut" as its publisher, in the wizard and in Add/Remove Programs, and
+    not a person's name. The winget package made the same move the day before."""
+    text = _read(ISS)
+    assert re.search(r'^#define AppPublisher "Macronaut"\s*$', text, re.M)
+    assert "poucke" not in text.lower()
+
+
 def test_the_template_still_has_the_holes_the_builder_fills():
     text = _read(ISS)
     for token in ("{{VERSION}}", "{{ROOT}}"):
