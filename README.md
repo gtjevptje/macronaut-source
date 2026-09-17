@@ -52,7 +52,7 @@ Windows' own OCR, and so does a single pixel changing colour.
 
 **It decides.** Every detection has a *found* branch and a *not found* branch,
 so a script can handle the dialog that never appeared instead of hammering the
-spot where it should have been. Loops, jumps and variables go with it.
+spot where it should have been. Loops and jumps go with it.
 
 **Keyboard and mouse in one script.** Clicks, keystrokes, chords, drags, scroll
 flicks and held keys in whatever order you need — hold **W** to keep moving
@@ -137,6 +137,7 @@ and hold-down with an adjustable hold duration.
 - System-tray icon with Start / Stop / Show / Quit menu and a colour state (indigo = idle, green = running)
 - Closing the window **fully quits** the app — the global hotkey hook and any running automation are stopped, so nothing lingers in the background
 - Instant dark / light theme toggle in Settings — no restart
+- Light when idle: about 0.1% of one CPU core while it sits waiting (measured on 2.3.5)
 
 ### Stats & logging
 - Rolling CPS and KPS display (5-second window)

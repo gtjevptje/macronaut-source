@@ -164,6 +164,25 @@ def test_public_docs_call_a_script_a_script(doc):
     )
 
 
+@pytest.mark.parametrize("doc", ["README.md", "site/README.template.md",
+                                 "site/template.html"])
+def test_public_docs_do_not_sell_variables_nobody_can_create(doc):
+    """⚠ Both READMEs promised "loops, jumps and variables" until 17 September
+    2026. The engine has variables, but the palette has no Set Var step and the
+    If / Loop editors offer no variable condition, so nobody can make one. If
+    that changes, add the step first and then this word back."""
+    path = os.path.join(REPO, doc)
+    if not os.path.exists(path):
+        pytest.skip(doc + " is not in this tree")
+    with open(os.path.join(REPO, "main.py"), encoding="utf-8") as fh:
+        palette_has_set_var = "flow.N_SET_VAR" in fh.read()
+    if palette_has_set_var:
+        pytest.skip("a Set Var step exists now, so the claim may be true")
+    with open(path, encoding="utf-8") as fh:
+        text = fh.read().lower()
+    assert "variables" not in text, doc + " still offers variables"
+
+
 def test_the_readme_only_names_tabs_that_exist():
     """⚠ The README claimed a "Four-tab layout: Sequence / Basic / Settings /
     Stats" until 12 September 2026 — a UI that stopped existing with the
